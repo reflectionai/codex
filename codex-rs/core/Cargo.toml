@@ -12,7 +12,7 @@ anyhow = "1"
 async-channel = "2.3.1"
 base64 = "0.21"
 bytes = "1.10.1"
-clap = { version = "4", features = ["derive", "wrap_help"], optional = true }
+clap = { version = "4", features = ["derive", "wrap_help"] }
 codex-apply-patch = { path = "../apply-patch" }
 dirs = "6"
 env-flags = "0.1.1"
@@ -59,4 +59,4 @@ wiremock = "0.6"
 default = []
 
 # Separate feature so that `clap` is not a mandatory dependency.
-cli = ["clap"]
+cli = []

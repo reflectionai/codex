@@ -356,28 +356,3 @@ impl WidgetRef for &BottomPane<'_> {
         }
     }
 }
-
-fn update_border_for_input_focus(textarea: &mut TextArea, has_input_focus: bool) {
-    let (title, border_style) = if has_input_focus {
-        (
-            "use Enter to send for now (Ctrl‑D to quit)",
-            Style::default().dim(),
-        )
-    } else {
-        ("", Style::default())
-    };
-    let right_title = if has_input_focus {
-        Line::from("press enter to send").alignment(Alignment::Right)
-    } else {
-        Line::from("")
-    };
-
-    textarea.set_block(
-        ratatui::widgets::Block::default()
-            .title_bottom(title)
-            .title_bottom(right_title)
-            .borders(ratatui::widgets::Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(border_style),
-    );
-}

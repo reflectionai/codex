@@ -89,7 +89,7 @@ impl EventProcessor {
                 let msg = format!("Task started: {id}");
                 ts_println!("{}", msg.style(self.dimmed));
             }
-            EventMsg::TaskComplete => {
+            EventMsg::TaskComplete { .. } => {
                 let msg = format!("Task complete: {id}");
                 ts_println!("{}", msg.style(self.bold));
             }

@@ -44,10 +44,32 @@ pub struct Prompt {
     pub store: bool,
 }
 
+/// Token usage breakdown from the Responses API (when present).
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct UsageBreakdown {
+    pub input_tokens: Option<i64>,
+    #[serde(default)]
+    pub input_tokens_details: Option<InputTokensDetails>,
+    pub output_tokens: Option<i64>,
+    pub total_tokens: Option<i64>,
+}
+
+/// Extra details about input tokens (e.g., cached tokens).
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct InputTokensDetails {
+    pub cached_tokens: Option<i64>,
+}
+
+/// Events emitted by the streaming Responses API.
 #[derive(Debug)]
 pub enum ResponseEvent {
+    /// A single content item is complete.
     OutputItemDone(ResponseItem),
-    Completed { response_id: String },
+    /// The full response is complete: `response_id` and optional usage.
+    Completed {
+        response_id: String,
+        usage: Option<UsageBreakdown>,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -140,6 +162,10 @@ impl ModelClient {
         let model = model.to_string();
         let client = reqwest::Client::new();
         Self { model, client }
+    }
+    /// Return the model identifier.
+    pub fn model(&self) -> &str {
+        &self.model
     }
 
     pub async fn stream(&mut self, prompt: &Prompt) -> Result<ResponseStream> {
@@ -243,9 +269,14 @@ struct SseEvent {
     item: Option<Value>,
 }
 
+/// Payload for a completed response, including optional token usage.
 #[derive(Debug, Deserialize)]
 struct ResponseCompleted {
+    /// The response ID for retrieval or pagination.
     id: String,
+    /// Optional token usage breakdown provided by the API.
+    #[serde(default)]
+    usage: Option<UsageBreakdown>,
 }
 
 async fn process_sse<S>(stream: S, tx_event: mpsc::Sender<Result<ResponseEvent>>)
@@ -257,7 +288,9 @@ where
     // If the stream stays completely silent for an extended period treat it as disconnected.
     let idle_timeout = *OPENAI_STREAM_IDLE_TIMEOUT_MS;
     // The response id returned from the "complete" message.
-    let mut response_id = None;
+    let mut response_id: Option<String> = None;
+    // Capture real token usage when `response.completed` includes it.
+    let mut usage: Option<UsageBreakdown> = None;
 
     loop {
         let sse = match timeout(idle_timeout, stream.next()).await {
@@ -269,18 +302,16 @@ where
                 return;
             }
             Ok(None) => {
-                match response_id {
-                    Some(response_id) => {
-                        let event = ResponseEvent::Completed { response_id };
-                        let _ = tx_event.send(Ok(event)).await;
-                    }
-                    None => {
-                        let _ = tx_event
-                            .send(Err(CodexErr::Stream(
-                                "stream closed before response.completed".into(),
-                            )))
-                            .await;
-                    }
+                if let Some(response_id) = response_id.clone() {
+                    let event = ResponseEvent::Completed { response_id, usage: usage.clone() };
+                    let _ = tx_event.send(Ok(event)).await;
+                } else {
+                    // No response ID available: treat as stream error
+                    let _ = tx_event
+                        .send(Err(CodexErr::Stream(
+                            "stream closed before response.completed".into(),
+                        )))
+                        .await;
                 }
                 return;
             }
@@ -337,7 +368,8 @@ where
                 if let Some(resp_val) = event.response {
                     match serde_json::from_value::<ResponseCompleted>(resp_val) {
                         Ok(r) => {
-                            response_id = Some(r.id);
+                            response_id = Some(r.id.clone());
+                            usage = r.usage;
                         }
                         Err(e) => {
                             debug!("failed to parse ResponseCompleted: {e}");
