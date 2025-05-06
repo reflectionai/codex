@@ -679,13 +679,18 @@ export class AgentLoop {
         const MAX_RETRIES = 8;
         for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
           try {
-            let reasoning: Reasoning | undefined;
-            if (this.model.startsWith("o")) {
-              reasoning = { effort: this.config.reasoningEffort ?? "high" };
-              if (this.model === "o3" || this.model === "o4-mini") {
-                reasoning.summary = "auto";
-              }
+        // only set reasoning when using an "o*" (Codex) model
+        const isCodex = this.model.startsWith("o");
+        const reasoningParam = isCodex
+          ? {
+              reasoning: {
+                effort: this.config.reasoningEffort ?? "high",
+                ...(this.model === "o3" || this.model === "o4-mini"
+                  ? { summary: "auto" }
+                  : {}),
+              },
             }
+          : {};
             const mergedInstructions = [prefix, this.instructions]
               .filter(Boolean)
               .join("\n");
@@ -705,14 +710,14 @@ export class AgentLoop {
             );
 
             // eslint-disable-next-line no-await-in-loop
-            stream = await responseCall({
-              model: this.model,
-              instructions: mergedInstructions,
-              input: turnInput,
-              stream: true,
-              parallel_tool_calls: false,
-              reasoning,
-              ...(this.config.flexMode ? { service_tier: "flex" } : {}),
+        stream = await responseCall({
+          model: this.model,
+          instructions: mergedInstructions,
+          input: turnInput,
+          stream: true,
+          parallel_tool_calls: false,
+          ...reasoningParam,
+          ...(this.config.flexMode ? { service_tier: "flex" } : {}),
               ...(this.disableResponseStorage
                 ? { store: false }
                 : {

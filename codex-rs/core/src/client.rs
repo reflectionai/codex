@@ -175,6 +175,16 @@ impl ModelClient {
             return stream_from_fixture(path).await;
         }
 
+        // only include reasoning on "o*" (Codex) models
+        let reasoning_field = if self.model.starts_with('o') {
+            Some(Reasoning {
+                effort: "high",
+                generate_summary: None,
+            })
+        } else {
+            None
+        };
+        
         let payload = Payload {
             model: &self.model,
             instructions: prompt.instructions.as_ref(),
@@ -182,10 +192,7 @@ impl ModelClient {
             tools: &TOOLS,
             tool_choice: "auto",
             parallel_tool_calls: false,
-            reasoning: Some(Reasoning {
-                effort: "high",
-                generate_summary: None,
-            }),
+            reasoning: reasoning_field,
             previous_response_id: prompt.prev_id.clone(),
             store: prompt.store,
             stream: true,
