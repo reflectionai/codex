@@ -72,6 +72,15 @@ pub(crate) struct BottomPane<'a> {
     has_input_focus: bool,
 
     is_task_running: bool,
+
+    // ---------------------------------------------------------------------
+    // Context statistics shown in the bottom-pane border while the text input
+    // is focused. These are updated by the parent `ChatWidget` whenever the
+    // conversation history changes.
+    // ---------------------------------------------------------------------
+    input_tokens: usize,
+    output_tokens: usize,
+    context_left_percent: f32,
 }
 
 pub(crate) struct BottomPaneParams {
@@ -89,15 +98,27 @@ impl BottomPane<'_> {
         let mut textarea = TextArea::default();
         textarea.set_placeholder_text("send a message");
         textarea.set_cursor_line_style(Style::default());
-        update_border_for_input_focus(&mut textarea, has_input_focus);
 
-        Self {
+        // The initial border depends on the input-focus state, therefore we
+        // create the BottomPane **first** and call `refresh_border()` on it
+        // afterwards.
+
+        let mut this = Self {
             textarea,
             state: PaneState::TextInput,
             app_event_tx,
             has_input_focus,
             is_task_running: false,
-        }
+
+            input_tokens: 0,
+            output_tokens: 0,
+            context_left_percent: 100.0,
+        };
+
+        // Initialize the border once with the default stats.
+        this.refresh_border();
+
+        this
     }
 
     /// Update the status indicator with the latest log line.  Only effective
@@ -112,7 +133,66 @@ impl BottomPane<'_> {
 
     pub(crate) fn set_input_focus(&mut self, has_input_focus: bool) {
         self.has_input_focus = has_input_focus;
-        update_border_for_input_focus(&mut self.textarea, has_input_focus);
+        self.refresh_border();
+    }
+
+    /// Internal helper that (re)builds the textarea border so it reflects the
+    /// current input-focus status and the live context statistics (tokens and
+    /// remaining percentage).
+    fn refresh_border(&mut self) {
+        let (left_title, border_style) = if self.has_input_focus {
+            (
+                "use Enter to send (Ctrl-D to quit)",
+                Style::default().dim(),
+            )
+        } else {
+            ("", Style::default())
+        };
+
+        // Right-aligned stats when the textarea is focused.
+        let right_title = if self.has_input_focus {
+            let percent = self.context_left_percent.round() as i32;
+            let info = format!(
+                "{percent}% context left — {} in / {} out",
+                self.input_tokens, self.output_tokens
+            );
+            Line::from(info).alignment(Alignment::Right)
+        } else {
+            Line::from("")
+        };
+
+        self.textarea.set_block(
+            ratatui::widgets::Block::default()
+                .title_bottom(left_title)
+                .title_bottom(right_title)
+                .borders(ratatui::widgets::Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(border_style),
+        );
+    }
+
+    /// Update the token statistics and context percentage displayed in the
+    /// border. The parent widget should call this whenever the conversation
+    /// changes. Triggers a redraw if the values changed.
+    pub(crate) fn update_context_stats(
+        &mut self,
+        input_tokens: usize,
+        output_tokens: usize,
+        context_left_percent: f32,
+    ) -> Result<(), SendError<AppEvent>> {
+        if self.input_tokens == input_tokens
+            && self.output_tokens == output_tokens
+            && (self.context_left_percent - context_left_percent).abs() < f32::EPSILON
+        {
+            return Ok(()); // no update necessary
+        }
+
+        self.input_tokens = input_tokens;
+        self.output_tokens = output_tokens;
+        self.context_left_percent = context_left_percent;
+
+        self.refresh_border();
+        self.request_redraw()
     }
 
     /// Forward a key event to the appropriate child widget.
@@ -275,29 +355,4 @@ impl WidgetRef for &BottomPane<'_> {
             PaneState::TextInput => self.textarea.render(area, buf),
         }
     }
-}
-
-fn update_border_for_input_focus(textarea: &mut TextArea, has_input_focus: bool) {
-    let (title, border_style) = if has_input_focus {
-        (
-            "use Enter to send for now (Ctrl‑D to quit)",
-            Style::default().dim(),
-        )
-    } else {
-        ("", Style::default())
-    };
-    let right_title = if has_input_focus {
-        Line::from("press enter to send").alignment(Alignment::Right)
-    } else {
-        Line::from("")
-    };
-
-    textarea.set_block(
-        ratatui::widgets::Block::default()
-            .title_bottom(title)
-            .title_bottom(right_title)
-            .borders(ratatui::widgets::Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(border_style),
-    );
 }

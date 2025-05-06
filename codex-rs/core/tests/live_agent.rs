@@ -114,7 +114,7 @@ async fn live_streaming_and_prev_id_reset() {
 
         match ev.msg {
             EventMsg::AgentMessage { .. } => saw_message_before_complete = true,
-            EventMsg::TaskComplete => break,
+            EventMsg::TaskComplete { .. } => break,
             EventMsg::Error { message } => panic!("agent reported error in task1: {message}"),
             _ => (),
         }
@@ -149,7 +149,7 @@ async fn live_streaming_and_prev_id_reset() {
             EventMsg::AgentMessage { message } if message.contains("second turn succeeded") => {
                 got_expected = true;
             }
-            EventMsg::TaskComplete => break,
+            EventMsg::TaskComplete { .. } => break,
             EventMsg::Error { message } => panic!("agent reported error in task2: {message}"),
             _ => (),
         }
@@ -209,7 +209,7 @@ async fn live_shell_function_call() {
                 assert!(stdout.contains(MARKER));
                 saw_end_with_output = true;
             }
-            EventMsg::TaskComplete => break,
+            EventMsg::TaskComplete { .. } => break,
             EventMsg::Error { message } => panic!("agent error during shell test: {message}"),
             _ => (),
         }

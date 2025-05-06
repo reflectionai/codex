@@ -27,6 +27,34 @@ import {
 import { createInputItem } from "./utils/input-utils";
 import { initLogger } from "./utils/logger/log";
 import { isModelSupportedForResponses } from "./utils/model-utils.js";
+import { approximateTokensUsed } from "./utils/approximate-tokens-used.js";
+
+// ── Pricing table for cost estimation (USD per token) ───────────────────────
+type TokenRates = { input: number; cachedInput: number; output: number };
+const detailedPriceMap: Record<string, TokenRates> = {
+  // OpenAI "o-series" experimental
+  "o3":        { input: 10/1e6, cachedInput: 2.5/1e6, output: 40/1e6 },
+  "o4-mini":   { input: 1.1/1e6, cachedInput: 0.275/1e6, output: 4.4/1e6 },
+  // GPT-4.1 family
+  "gpt-4.1-nano": { input: 0.1/1e6, cachedInput: 0.025/1e6, output: 0.4/1e6 },
+  "gpt-4.1-mini": { input: 0.4/1e6, cachedInput: 0.1/1e6,   output: 1.6/1e6 },
+  "gpt-4.1":      { input: 2/1e6,   cachedInput: 0.5/1e6,   output: 8/1e6 },
+  // GPT-4o family
+  "gpt-4o-mini":  { input: 0.6/1e6, cachedInput: 0.3/1e6,   output: 2.4/1e6 },
+  "gpt-4o":       { input: 5/1e6,   cachedInput: 2.5/1e6,   output: 20/1e6 },
+};
+/** Estimate cost in USD given model, token counts, and cache flag */
+function estimateCost(
+  model: string,
+  inputTokens: number,
+  outputTokens: number,
+  useCachedPrompt = false
+): number {
+  const rates = detailedPriceMap[model.toLowerCase()];
+  if (!rates) return 0;
+  const inRate  = useCachedPrompt ? rates.cachedInput : rates.input;
+  return inputTokens * inRate + outputTokens * rates.output;
+}
 import { parseToolCall } from "./utils/parsers";
 import { onExit, setInkRenderer } from "./utils/terminal";
 import chalk from "chalk";
@@ -509,6 +537,8 @@ async function runQuietMode({
   additionalWritableRoots: ReadonlyArray<string>;
   config: AppConfig;
 }): Promise<void> {
+  // Collect all response items to compute output token count
+  const outputItems: Array<ResponseItem> = [];
   const agent = new AgentLoop({
     model: config.model,
     config: config,
@@ -520,6 +550,8 @@ async function runQuietMode({
     onItem: (item: ResponseItem) => {
       // eslint-disable-next-line no-console
       console.log(formatResponseItemForQuietMode(item));
+      // track for cost estimation
+      outputItems.push(item);
     },
     onLoading: () => {
       /* intentionally ignored in quiet mode */
@@ -541,6 +573,19 @@ async function runQuietMode({
 
   const inputItem = await createInputItem(prompt, imagePaths);
   await agent.run([inputItem]);
+  // After streaming completes, estimate and print cost
+  try {
+    const inputTokens  = Math.ceil(prompt.length / 4);
+    const outputTokens = approximateTokensUsed(outputItems);
+    const cost = estimateCost(config.model, inputTokens, outputTokens);
+    // eslint-disable-next-line no-console
+    console.log(
+      `\nCost estimate (model=${config.model}): $${cost.toFixed(6)} ` +
+      `(${inputTokens} in • ${outputTokens} out)`
+    );
+  } catch {
+    // ignore errors in cost computation
+  }
 }
 
 const exit = () => {

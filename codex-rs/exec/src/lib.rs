@@ -136,7 +136,9 @@ pub async fn run_main(cli: Cli) -> anyhow::Result<()> {
         let initial_images_event_id = codex.submit(Op::UserInput { items }).await?;
         info!("Sent images with event ID: {initial_images_event_id}");
         while let Ok(event) = codex.next_event().await {
-            if event.id == initial_images_event_id && matches!(event.msg, EventMsg::TaskComplete) {
+            if event.id == initial_images_event_id
+                && matches!(event.msg, EventMsg::TaskComplete { .. })
+            {
                 break;
             }
         }
@@ -150,8 +152,8 @@ pub async fn run_main(cli: Cli) -> anyhow::Result<()> {
     // Run the loop until the task is complete.
     let mut event_processor = EventProcessor::create_with_ansi(stdout_with_ansi);
     while let Some(event) = rx.recv().await {
-        let last_event =
-            event.id == initial_prompt_task_id && matches!(event.msg, EventMsg::TaskComplete);
+        let last_event = event.id == initial_prompt_task_id
+            && matches!(event.msg, EventMsg::TaskComplete { .. });
         event_processor.process_event(event);
         if last_event {
             break;

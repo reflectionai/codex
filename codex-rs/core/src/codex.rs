@@ -57,6 +57,29 @@ use crate::safety::assess_patch_safety;
 use crate::safety::SafetyCheck;
 use crate::user_notification::UserNotification;
 use crate::util::backoff;
+/// Per-token pricing rates (USD) for input, cached input, and output.
+struct TokenRates {
+    input: f64,
+    cached_input: f64,
+    output: f64,
+}
+
+/// Return the per-token rates for a model, or None if unknown.
+fn get_token_rates(model: &str) -> Option<TokenRates> {
+    match model.to_lowercase().as_str() {
+        // OpenAI o-series experimental
+        "o3" => Some(TokenRates { input: 10.0/1_000_000.0, cached_input: 2.5/1_000_000.0, output: 40.0/1_000_000.0 }),
+        "o4-mini" => Some(TokenRates { input: 1.1/1_000_000.0, cached_input: 0.275/1_000_000.0, output: 4.4/1_000_000.0 }),
+        // GPT-4.1 family
+        "gpt-4.1-nano" => Some(TokenRates { input: 0.1/1_000_000.0, cached_input: 0.025/1_000_000.0, output: 0.4/1_000_000.0 }),
+        "gpt-4.1-mini" => Some(TokenRates { input: 0.4/1_000_000.0, cached_input: 0.1/1_000_000.0, output: 1.6/1_000_000.0 }),
+        "gpt-4.1"      => Some(TokenRates { input: 2.0/1_000_000.0, cached_input: 0.5/1_000_000.0, output: 8.0/1_000_000.0 }),
+        // GPT-4o family
+        "gpt-4o-mini" => Some(TokenRates { input: 0.6/1_000_000.0, cached_input: 0.3/1_000_000.0, output: 2.4/1_000_000.0 }),
+        "gpt-4o"      => Some(TokenRates { input: 5.0/1_000_000.0, cached_input: 2.5/1_000_000.0, output: 20.0/1_000_000.0 }),
+        _ => None,
+    }
+}
 use crate::zdr_transcript::ZdrTranscript;
 
 /// The high-level interface to the Codex system.
@@ -631,6 +654,18 @@ async fn run_task(sess: Arc<Session>, sub_id: String, input: Vec<InputItem>) {
     if input.is_empty() {
         return;
     }
+    // Approximate token count for input: assume ~4 characters per token
+    let initial_input_items = input.clone();
+    let input_char_count: usize = initial_input_items
+        .iter()
+        .map(|item| match item {
+            InputItem::Text { text } => text.len(),
+            _ => 0,
+        })
+        .sum();
+    let input_tokens: usize = (input_char_count + 3) / 4;
+    // Track output character count for token approximation
+    let mut output_char_count: usize = 0;
     let event = Event {
         id: sub_id.clone(),
         msg: EventMsg::TaskStarted,
@@ -640,6 +675,8 @@ async fn run_task(sess: Arc<Session>, sub_id: String, input: Vec<InputItem>) {
     }
 
     let mut pending_response_input: Vec<ResponseInputItem> = vec![ResponseInputItem::from(input)];
+    // Track exact usage when provided by the API
+    let mut final_usage: Option<crate::client::UsageBreakdown> = None;
     loop {
         let mut net_new_turn_input = pending_response_input
             .drain(..)
@@ -677,7 +714,11 @@ async fn run_task(sess: Arc<Session>, sub_id: String, input: Vec<InputItem>) {
             })
             .collect();
         match run_turn(&sess, sub_id.clone(), turn_input).await {
-            Ok(turn_output) => {
+            Ok((turn_output, usage_opt)) => {
+                // Capture usage for cost computation when available
+                if usage_opt.is_some() {
+                    final_usage = usage_opt;
+                }
                 let (items, responses): (Vec<_>, Vec<_>) = turn_output
                     .into_iter()
                     .map(|p| (p.item, p.response))
@@ -687,6 +728,25 @@ async fn run_task(sess: Arc<Session>, sub_id: String, input: Vec<InputItem>) {
                     .flatten()
                     .collect::<Vec<ResponseInputItem>>();
                 let last_assistant_message = get_last_assistant_message_from_turn(&items);
+                // Accumulate output characters for token approximation
+                for item in &items {
+                    match item {
+                        ResponseItem::Message { role, content } if role == "assistant" => {
+                            for c in content {
+                                if let ContentItem::OutputText { text } = c {
+                                    output_char_count += text.len();
+                                }
+                            }
+                        }
+                        ResponseItem::FunctionCall { name, arguments, .. } => {
+                            output_char_count += name.len() + arguments.len();
+                        }
+                        ResponseItem::FunctionCallOutput { output, .. } => {
+                            output_char_count += output.len();
+                        }
+                        _ => {}
+                    }
+                }
 
                 // Only attempt to take the lock if there is something to record.
                 if !items.is_empty() {
@@ -721,9 +781,35 @@ async fn run_task(sess: Arc<Session>, sub_id: String, input: Vec<InputItem>) {
         }
     }
     sess.remove_task(&sub_id);
+    // Approximate token count for output: assume ~4 characters per token
+    let output_tokens: usize = (output_char_count + 3) / 4;
+    // Compute cost: prefer exact API usage when available
+    let model_name = sess.client.model();
+    // Compute cost: prefer exact API usage when available, fallback to heuristic
+    let precise = final_usage.is_some();
+    let cost = if let Some(rates) = get_token_rates(model_name) {
+        if precise {
+            let u = final_usage.unwrap();
+            let input_toks = u.input_tokens.unwrap_or(input_tokens as i64) as usize;
+            let cached_toks = u
+                .input_tokens_details
+                .and_then(|d| d.cached_tokens)
+                .unwrap_or(0) as usize;
+            let non_cached = input_toks.saturating_sub(cached_toks);
+            let out_toks = u.output_tokens.unwrap_or(output_tokens as i64) as usize;
+            (non_cached as f64) * rates.input
+                + (cached_toks as f64) * rates.cached_input
+                + (out_toks as f64) * rates.output
+        } else {
+            // Fallback heuristic
+            (input_tokens as f64) * rates.input + (output_tokens as f64) * rates.output
+        }
+    } else {
+        0.0
+    };
     let event = Event {
         id: sub_id,
-        msg: EventMsg::TaskComplete,
+        msg: EventMsg::TaskComplete { input_tokens, output_tokens, cost, precise },
     };
     sess.tx_event.send(event).await.ok();
 }
@@ -732,7 +818,7 @@ async fn run_turn(
     sess: &Session,
     sub_id: String,
     input: Vec<ResponseItem>,
-) -> CodexResult<Vec<ProcessedResponseItem>> {
+) -> CodexResult<(Vec<ProcessedResponseItem>, Option<crate::client::UsageBreakdown>)> {
     // Decide whether to use server-side storage (previous_response_id) or disable it
     let (prev_id, store, is_first_turn) = {
         let state = sess.state.lock().unwrap();
@@ -763,7 +849,7 @@ async fn run_turn(
     let mut retries = 0;
     loop {
         match try_run_turn(sess, &sub_id, &prompt).await {
-            Ok(output) => return Ok(output),
+            Ok((output, usage_opt)) => return Ok((output, usage_opt)),
             Err(CodexErr::Interrupted) => return Err(CodexErr::Interrupted),
             Err(e) => {
                 if retries < *OPENAI_STREAM_MAX_RETRIES {
@@ -808,14 +894,20 @@ async fn try_run_turn(
     sess: &Session,
     sub_id: &str,
     prompt: &Prompt,
-) -> CodexResult<Vec<ProcessedResponseItem>> {
+) -> CodexResult<(Vec<ProcessedResponseItem>, Option<crate::client::UsageBreakdown>)> {
     let mut stream = sess.client.clone().stream(prompt).await?;
 
     // Buffer all the incoming messages from the stream first, then execute them.
     // If we execute a function call in the middle of handling the stream, it can time out.
     let mut input = Vec::new();
+    // Collect all events, capturing the final usage if provided
+    let mut usage: Option<crate::client::UsageBreakdown> = None;
     while let Some(event) = stream.next().await {
-        input.push(event?);
+        let ev = event?;
+        if let crate::client::ResponseEvent::Completed { usage: u, .. } = &ev {
+            usage = u.clone();
+        }
+        input.push(ev);
     }
 
     let mut output = Vec::new();
@@ -825,14 +917,14 @@ async fn try_run_turn(
                 let response = handle_response_item(sess, sub_id, item.clone()).await?;
                 output.push(ProcessedResponseItem { item, response });
             }
-            ResponseEvent::Completed { response_id } => {
+            ResponseEvent::Completed { response_id, usage: _ } => {
                 let mut state = sess.state.lock().unwrap();
                 state.previous_response_id = Some(response_id);
                 break;
             }
         }
     }
-    Ok(output)
+    Ok((output, usage))
 }
 
 async fn handle_response_item(

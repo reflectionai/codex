@@ -302,8 +302,17 @@ pub enum EventMsg {
     /// Agent has started a task
     TaskStarted,
 
-    /// Agent has completed all actions
-    TaskComplete,
+    /// Agent has completed all actions, reporting token counts, cost, and whether cost is precise
+    TaskComplete {
+        /// Number of tokens in the user's input (approximate or from API usage)
+        input_tokens: usize,
+        /// Number of tokens in the assistant's output (approximate or from API usage)
+        output_tokens: usize,
+        /// Cost in USD for this turn (precise or estimated)
+        cost: f64,
+        /// Whether `cost` is based on exact API usage (true) or a fallback estimate (false)
+        precise: bool,
+    },
 
     /// Agent text output message
     AgentMessage {

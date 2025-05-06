@@ -35,6 +35,10 @@ pub(crate) struct ChatWidget<'a> {
     bottom_pane: BottomPane<'a>,
     input_focus: InputFocus,
     config: Config,
+
+    // Accumulated character counts for user and assistant messages so far.
+    char_in: usize,
+    char_out: usize,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -44,6 +48,37 @@ enum InputFocus {
 }
 
 impl ChatWidget<'_> {
+    /// Approximate the maximum context length (in tokens) for a given model.
+    /// Mirrors the heuristic implemented in the TypeScript CLI.
+    fn max_tokens_for_model(model: &str) -> usize {
+        let lower = model.to_ascii_lowercase();
+        if lower.contains("32k") {
+            32_000
+        } else if lower.contains("16k") {
+            16_000
+        } else if lower.contains("8k") {
+            8_000
+        } else if lower.contains("4k") {
+            4_000
+        } else {
+            128_000 // default fallback
+        }
+    }
+
+    /// Recalculate token statistics and forward them to the BottomPane.
+    fn recalc_and_update_context_stats(&mut self) {
+        let tokens_in = (self.char_in + 3) / 4; // ceil(char/4)
+        let tokens_out = (self.char_out + 3) / 4;
+        let total_tokens = tokens_in + tokens_out;
+
+        let max_tokens = Self::max_tokens_for_model(&self.config.model);
+        let remaining = max_tokens.saturating_sub(total_tokens);
+        let percent_left = (remaining as f32 / max_tokens as f32) * 100.0;
+
+        let _ = self
+            .bottom_pane
+            .update_context_stats(tokens_in, tokens_out, percent_left);
+    }
     pub(crate) fn new(
         config: Config,
         app_event_tx: Sender<AppEvent>,
@@ -100,6 +135,9 @@ impl ChatWidget<'_> {
             }),
             input_focus: InputFocus::BottomPane,
             config,
+
+            char_in: 0,
+            char_out: 0,
         };
 
         let _ = chat_widget.submit_welcome_message();
@@ -211,7 +249,9 @@ impl ChatWidget<'_> {
 
         // Only show text portion in conversation history for now.
         if !text.is_empty() {
-            self.conversation_history.add_user_message(text);
+            self.conversation_history.add_user_message(&text);
+            self.char_in = self.char_in.saturating_add(text.len());
+            self.recalc_and_update_context_stats();
         }
         self.conversation_history.scroll_to_bottom();
 
@@ -231,7 +271,12 @@ impl ChatWidget<'_> {
                 self.request_redraw()?;
             }
             EventMsg::AgentMessage { message } => {
-                self.conversation_history.add_agent_message(message);
+                self.conversation_history.add_agent_message(message.clone());
+
+                // Update token statistics.
+                self.char_out = self.char_out.saturating_add(message.len());
+                self.recalc_and_update_context_stats();
+
                 self.request_redraw()?;
             }
             EventMsg::TaskStarted => {
@@ -240,7 +285,7 @@ impl ChatWidget<'_> {
                     .add_background_event(format!("task {id} started"));
                 self.request_redraw()?;
             }
-            EventMsg::TaskComplete => {
+            EventMsg::TaskComplete { .. } => {
                 self.bottom_pane.set_task_running(false)?;
                 self.request_redraw()?;
             }
