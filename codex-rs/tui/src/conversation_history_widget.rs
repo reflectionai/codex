@@ -161,8 +161,8 @@ impl ConversationHistoryWidget {
         self.scroll_position = usize::MAX;
     }
 
-    pub fn add_user_message(&mut self, message: String) {
-        self.add_to_history(HistoryCell::new_user_prompt(message));
+    pub fn add_user_message(&mut self, message: &str) {
+        self.add_to_history(HistoryCell::new_user_prompt(message.to_string()));
     }
 
     pub fn add_agent_message(&mut self, message: String) {
