@@ -204,7 +204,14 @@ impl ModelClient {
             tools: &tools_json,
             tool_choice: "auto",
             parallel_tool_calls: false,
-            reasoning: reasoning_field,
+            reasoning: if self.model.starts_with("o") {
+                Some(Reasoning {
+                    effort: "high",
+                    generate_summary: None,
+                })
+            } else {
+                None
+            },
             previous_response_id: prompt.prev_id.clone(),
             store: prompt.store,
             stream: true,
