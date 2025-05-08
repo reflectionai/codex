@@ -803,8 +803,44 @@ async fn run_task(sess: Arc<Session>, sub_id: String, input: Vec<InputItem>) {
         match run_turn(&sess, sub_id.clone(), turn_input).await {
             Ok((turn_output, usage_opt)) => {
                 // Capture usage for cost computation when available
+                let usage_for_event = usage_opt.clone();
                 if usage_opt.is_some() {
                     final_usage = usage_opt;
+                }
+                // Emit per-LLM-call usage event
+                {
+                    let model_name = sess.client.model();
+                    let precise_flag = usage_for_event.is_some();
+                    let mut turn_input_tokens = 0;
+                    let mut turn_output_tokens = 0;
+                    let mut turn_cost = 0.0;
+                    if let Some(rates) = get_token_rates(model_name) {
+                        if let Some(ub) = usage_for_event.as_ref() {
+                            let input_toks = ub.input_tokens.unwrap_or(0) as usize;
+                            let cached = ub
+                                .input_tokens_details
+                                .as_ref()
+                                .and_then(|d| d.cached_tokens)
+                                .unwrap_or(0) as usize;
+                            let non_cached = input_toks.saturating_sub(cached);
+                            let output_toks = ub.output_tokens.unwrap_or(0) as usize;
+                            turn_input_tokens = input_toks;
+                            turn_output_tokens = output_toks;
+                            turn_cost = (non_cached as f64) * rates.input
+                                + (cached as f64) * rates.cached_input
+                                + (output_toks as f64) * rates.output;
+                        }
+                    }
+                    let event = Event {
+                        id: sub_id.clone(),
+                        msg: EventMsg::ModelUsage {
+                            input_tokens: turn_input_tokens,
+                            output_tokens: turn_output_tokens,
+                            cost: turn_cost,
+                            precise: precise_flag,
+                        },
+                    };
+                    sess.tx_event.send(event).await.ok();
                 }
                 let (items, responses): (Vec<_>, Vec<_>) = turn_output
                     .into_iter()
@@ -873,34 +909,50 @@ async fn run_task(sess: Arc<Session>, sub_id: String, input: Vec<InputItem>) {
     }
     sess.remove_task(&sub_id);
     // Approximate token count for output: assume ~4 characters per token
-    let output_tokens: usize = (output_char_count + 3) / 4;
+    let approx_output_tokens: usize = (output_char_count + 3) / 4;
     // Compute cost: prefer exact API usage when available
     let model_name = sess.client.model();
-    // Compute cost: prefer exact API usage when available, fallback to heuristic
     let precise = final_usage.is_some();
+    // Determine final input/output tokens: use API counts when precise
+    let (final_input_tokens, final_output_tokens) = if precise {
+        let ub = final_usage.as_ref().unwrap();
+        (
+            ub.input_tokens.unwrap_or(input_tokens as i64) as usize,
+            ub.output_tokens.unwrap_or(approx_output_tokens as i64) as usize,
+        )
+    } else {
+        (input_tokens, approx_output_tokens)
+    };
+    // Compute cost based on exact usage or fallback heuristic
     let cost = if let Some(rates) = get_token_rates(model_name) {
         if precise {
-            let u = final_usage.unwrap();
-            let input_toks = u.input_tokens.unwrap_or(input_tokens as i64) as usize;
-            let cached_toks = u
+            let ub = final_usage.as_ref().unwrap();
+            let in_toks = ub.input_tokens.unwrap_or(final_input_tokens as i64) as usize;
+            let cached = ub
                 .input_tokens_details
+                .as_ref()
                 .and_then(|d| d.cached_tokens)
                 .unwrap_or(0) as usize;
-            let non_cached = input_toks.saturating_sub(cached_toks);
-            let out_toks = u.output_tokens.unwrap_or(output_tokens as i64) as usize;
+            let non_cached = in_toks.saturating_sub(cached);
+            let out_toks = ub.output_tokens.unwrap_or(final_output_tokens as i64) as usize;
             (non_cached as f64) * rates.input
-                + (cached_toks as f64) * rates.cached_input
+                + (cached as f64) * rates.cached_input
                 + (out_toks as f64) * rates.output
         } else {
-            // Fallback heuristic
-            (input_tokens as f64) * rates.input + (output_tokens as f64) * rates.output
+            (final_input_tokens as f64) * rates.input
+                + (final_output_tokens as f64) * rates.output
         }
     } else {
         0.0
     };
     let event = Event {
         id: sub_id,
-        msg: EventMsg::TaskComplete { input_tokens, output_tokens, cost, precise },
+        msg: EventMsg::TaskComplete {
+            input_tokens: final_input_tokens,
+            output_tokens: final_output_tokens,
+            cost,
+            precise,
+        },
     };
     sess.tx_event.send(event).await.ok();
 }

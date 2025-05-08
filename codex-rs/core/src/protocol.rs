@@ -314,6 +314,17 @@ pub enum EventMsg {
         /// Whether `cost` is based on exact API usage (true) or a fallback estimate (false)
         precise: bool,
     },
+    /// Model call usage for each individual LLM invocation
+    ModelUsage {
+        /// Number of tokens in the model input (from API usage or zero)
+        input_tokens: usize,
+        /// Number of tokens in the model output
+        output_tokens: usize,
+        /// Cost in USD for this single model call
+        cost: f64,
+        /// Whether `cost` is based on exact API usage (true) or a fallback estimate (false)
+        precise: bool,
+    },
 
     /// Agent text output message
     AgentMessage {
