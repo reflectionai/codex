@@ -901,7 +901,7 @@ async fn handle_function_call(
             };
 
             // check if this was a patch, and apply it if so
-            match maybe_parse_apply_patch_verified(&params.command, &params.cwd) {
+            match maybe_parse_apply_patch_verified(&params.command, &sess.cwd) {
                 MaybeApplyPatchVerified::Body(changes) => {
                     return apply_patch(sess, sub_id, call_id, changes).await;
                 }
