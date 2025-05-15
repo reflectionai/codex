@@ -313,6 +313,21 @@ pub struct ConfigOverrides {
 }
 
 impl Config {
+    /// Load configuration, optionally applying overrides (CLI flags). Merges
+    /// ~/.codex/config.toml, ~/.codex/instructions.md, embedded defaults, and
+    /// any values provided in `overrides` (highest precedence).
+    pub fn load_with_overrides(overrides: ConfigOverrides) -> std::io::Result<Self> {
+        // Resolve the directory that stores Codex state (e.g. ~/.codex or the
+        // value of $CODEX_HOME) so we can embed it into the resulting
+        // `Config` instance.
+        let codex_home = find_codex_home()?;
+
+        let cfg: ConfigToml = ConfigToml::load_from_toml(&codex_home)?;
+        // tracing::warn!("Config parsed from config.toml: {cfg:?}");
+
+        Self::load_from_base_config_with_overrides(cfg, overrides, codex_home)
+    }
+
     /// Meant to be used exclusively for tests: `load_with_overrides()` should
     /// be used in all other cases.
     pub fn load_from_base_config_with_overrides(
