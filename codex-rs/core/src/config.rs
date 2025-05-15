@@ -185,7 +185,7 @@ impl Config {
     /// any values provided in `overrides` (highest precedence).
     pub fn load_with_overrides(overrides: ConfigOverrides) -> std::io::Result<Self> {
         let cfg: ConfigToml = ConfigToml::load_from_toml()?;
-        tracing::warn!("Config parsed from config.toml: {cfg:?}");
+        //tracing::warn!("Config parsed from config.toml: {cfg:?}");
         Self::load_from_base_config_with_overrides(cfg, overrides)
     }
 
