@@ -29,7 +29,7 @@ use crate::protocol::SandboxPolicy;
 const MAX_STREAM_OUTPUT: usize = 10 * 1024;
 const MAX_STREAM_OUTPUT_LINES: usize = 256;
 
-const DEFAULT_TIMEOUT_MS: u64 = 10_000;
+const DEFAULT_TIMEOUT_MS: u64 = 300_000; // 5 minutes in milliseconds
 
 // Hardcode these since it does not seem worth including the libc crate just
 // for these.
