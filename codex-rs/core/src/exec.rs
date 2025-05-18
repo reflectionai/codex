@@ -23,13 +23,31 @@ use crate::error::SandboxErr;
 use crate::exec_linux::exec_linux;
 use crate::protocol::SandboxPolicy;
 
-// Maximum we send for each stream, which is either:
-// - 10KiB OR
-// - 256 lines
-const MAX_STREAM_OUTPUT: usize = 10 * 1024;
-const MAX_STREAM_OUTPUT_LINES: usize = 256;
+use once_cell::sync::Lazy;
 
-const DEFAULT_TIMEOUT_MS: u64 = 300_000; // 5 minutes in milliseconds
+
+/// Each value is parsed as an unsigned integer. If parsing fails, or the
+/// environment variable is unset, we fall back to the hard-coded default.
+pub(crate) static MAX_STREAM_OUTPUT: Lazy<usize> = Lazy::new(|| {
+    std::env::var("CODEX_MAX_STREAM_OUTPUT")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(40 * 1024) // 40KiB
+});
+
+pub(crate) static MAX_STREAM_OUTPUT_LINES: Lazy<usize> = Lazy::new(|| {
+    std::env::var("CODEX_MAX_STREAM_OUTPUT_LINES")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(1024) // 1024 lines
+});
+
+pub(crate) static DEFAULT_TIMEOUT_MS: Lazy<u64> = Lazy::new(|| {
+    std::env::var("CODEX_DEFAULT_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(300_000) // 5 minutes
+});
 
 // Hardcode these since it does not seem worth including the libc crate just
 // for these.
@@ -361,17 +379,17 @@ pub(crate) async fn consume_truncated_output(
 
     let stdout_handle = tokio::spawn(read_capped(
         BufReader::new(stdout_reader),
-        MAX_STREAM_OUTPUT,
-        MAX_STREAM_OUTPUT_LINES,
+        *MAX_STREAM_OUTPUT,
+        *MAX_STREAM_OUTPUT_LINES,
     ));
     let stderr_handle = tokio::spawn(read_capped(
         BufReader::new(stderr_reader),
-        MAX_STREAM_OUTPUT,
-        MAX_STREAM_OUTPUT_LINES,
+        *MAX_STREAM_OUTPUT,
+        *MAX_STREAM_OUTPUT_LINES,
     ));
 
     let interrupted = ctrl_c.notified();
-    let timeout = Duration::from_millis(timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS));
+    let timeout = Duration::from_millis(timeout_ms.unwrap_or(*DEFAULT_TIMEOUT_MS));
     let exit_status = tokio::select! {
         result = tokio::time::timeout(timeout, child.wait()) => {
             match result {
