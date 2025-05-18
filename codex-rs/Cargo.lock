@@ -625,6 +625,7 @@ dependencies = [
  "maplit",
  "mcp-types",
  "mime_guess",
+ "once_cell",
  "openssl-sys",
  "patch",
  "path-absolutize",
