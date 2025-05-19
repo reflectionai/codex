@@ -127,7 +127,7 @@ async fn keeps_previous_response_id_between_tasks() {
             .await
             .unwrap()
             .unwrap();
-        if matches!(ev.msg, codex_core::protocol::EventMsg::TaskComplete) {
+        if matches!(ev.msg, codex_core::protocol::EventMsg::TaskComplete { .. }) {
             break;
         }
     }
@@ -149,7 +149,7 @@ async fn keeps_previous_response_id_between_tasks() {
             .unwrap()
             .unwrap();
         match ev.msg {
-            codex_core::protocol::EventMsg::TaskComplete => break,
+            codex_core::protocol::EventMsg::TaskComplete { .. } => break,
             codex_core::protocol::EventMsg::Error { message } => {
                 panic!("unexpected error: {message}")
             }

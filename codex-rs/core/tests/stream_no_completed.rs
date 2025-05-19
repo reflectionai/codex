@@ -115,7 +115,7 @@ async fn retries_on_early_close() {
             .await
             .unwrap()
             .unwrap();
-        if matches!(ev.msg, codex_core::protocol::EventMsg::TaskComplete) {
+        if matches!(ev.msg, codex_core::protocol::EventMsg::TaskComplete { .. }) {
             break;
         }
     }

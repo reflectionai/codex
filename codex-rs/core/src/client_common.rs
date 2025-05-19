@@ -48,6 +48,10 @@ impl Prompt {
 pub enum ResponseEvent {
     OutputItemDone(ResponseItem),
     Completed { response_id: String },
+    Usage {
+        prompt_tokens: u32,
+        completion_tokens: u32,
+    },
 }
 
 #[derive(Debug, Serialize)]

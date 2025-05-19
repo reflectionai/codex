@@ -309,8 +309,17 @@ pub enum EventMsg {
     /// Agent has started a task
     TaskStarted,
 
-    /// Agent has completed all actions
-    TaskComplete,
+    /// Agent has completed all actions. When using an OpenAI provider, the
+    /// server includes the total cost in USD as well as token usage metrics
+    /// for the entire task. For non-OpenAI providers these fields are `null`.
+    TaskComplete {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        total_cost: Option<f64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        prompt_tokens: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        completion_tokens: Option<u32>,
+    },
 
     /// Agent text output message
     AgentMessage {
