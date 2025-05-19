@@ -9,6 +9,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::env::VarError;
+use url::Url;
 
 use crate::error::EnvVarError;
 
@@ -34,7 +35,7 @@ pub struct ModelProviderInfo {
     /// Friendly display name.
     pub name: String,
     /// Base URL for the provider's OpenAI-compatible API.
-    pub base_url: String,
+    pub base_url: Url,
     /// Environment variable that stores the user's API key for this provider.
     pub env_key: Option<String>,
 
@@ -80,7 +81,7 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
             "openai",
             P {
                 name: "OpenAI".into(),
-                base_url: "https://api.openai.com/v1".into(),
+                base_url: Url::parse("https://api.openai.com/v1").unwrap(),
                 env_key: Some("OPENAI_API_KEY".into()),
                 env_key_instructions: Some("Create an API key (https://platform.openai.com) and export it as an environment variable.".into()),
                 wire_api: WireApi::Responses,
@@ -90,7 +91,7 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
             "openrouter",
             P {
                 name: "OpenRouter".into(),
-                base_url: "https://openrouter.ai/api/v1".into(),
+                base_url: Url::parse("https://openrouter.ai/api/v1").unwrap(),
                 env_key: Some("OPENROUTER_API_KEY".into()),
                 env_key_instructions: None,
                 wire_api: WireApi::Chat,
@@ -100,7 +101,7 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
             "gemini",
             P {
                 name: "Gemini".into(),
-                base_url: "https://generativelanguage.googleapis.com/v1beta/openai".into(),
+                base_url: Url::parse("https://generativelanguage.googleapis.com/v1beta/openai").unwrap(),
                 env_key: Some("GEMINI_API_KEY".into()),
                 env_key_instructions: None,
                 wire_api: WireApi::Chat,
@@ -110,7 +111,7 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
             "ollama",
             P {
                 name: "Ollama".into(),
-                base_url: "http://localhost:11434/v1".into(),
+                base_url: Url::parse("http://localhost:11434/v1").unwrap(),
                 env_key: None,
                 env_key_instructions: None,
                 wire_api: WireApi::Chat,
@@ -120,7 +121,7 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
             "mistral",
             P {
                 name: "Mistral".into(),
-                base_url: "https://api.mistral.ai/v1".into(),
+                base_url: Url::parse("https://api.mistral.ai/v1").unwrap(),
                 env_key: Some("MISTRAL_API_KEY".into()),
                 env_key_instructions: None,
                 wire_api: WireApi::Chat,
@@ -130,7 +131,7 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
             "deepseek",
             P {
                 name: "DeepSeek".into(),
-                base_url: "https://api.deepseek.com".into(),
+                base_url: Url::parse("https://api.deepseek.com").unwrap(),
                 env_key: Some("DEEPSEEK_API_KEY".into()),
                 env_key_instructions: None,
                 wire_api: WireApi::Chat,
@@ -140,7 +141,7 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
             "xai",
             P {
                 name: "xAI".into(),
-                base_url: "https://api.x.ai/v1".into(),
+                base_url: Url::parse("https://api.x.ai/v1").unwrap(),
                 env_key: Some("XAI_API_KEY".into()),
                 env_key_instructions: None,
                 wire_api: WireApi::Chat,
@@ -150,7 +151,7 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
             "groq",
             P {
                 name: "Groq".into(),
-                base_url: "https://api.groq.com/openai/v1".into(),
+                base_url: Url::parse("https://api.groq.com/openai/v1").unwrap(),
                 env_key: Some("GROQ_API_KEY".into()),
                 env_key_instructions: None,
                 wire_api: WireApi::Chat,

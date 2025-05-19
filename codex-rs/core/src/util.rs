@@ -5,6 +5,8 @@ use rand::Rng;
 use tokio::sync::Notify;
 use tracing::debug;
 
+use url::Url;
+
 use crate::config::Config;
 
 const INITIAL_DELAY_MS: u64 = 200;
@@ -63,4 +65,36 @@ pub fn is_inside_git_repo(config: &Config) -> bool {
     }
 
     false
+}
+
+pub (crate) trait UrlExt {
+    /// Append a path to the URL, without modifying the original URL components.
+    /// It allows us to configure query parameters and carry them over when we use
+    /// different Wire API endpoints.
+    /// 
+    /// This is necessary as some APIs (e.g. Azure OpenAI) requires query parameters
+    /// to select different versions.
+    fn append_path(self, path: &str) -> Result<Url, anyhow::Error>;
+}
+
+impl UrlExt for Url {
+    fn append_path(self, path: &str) -> Result<Url, anyhow::Error> {
+        // Parse the path as a relative URL to get normalized path segments
+        let path_url = Url::parse(&format!("http://dummy{}", path))
+            .map_err(|e| anyhow::anyhow!("Invalid path: {}", e))?;
+        
+        let mut url = self.clone();
+        {
+            let mut segments = url.path_segments_mut()
+                .map_err(|_| anyhow::anyhow!("Failed to get path segments"))?;
+            
+            // Add each segment from the parsed path URL
+            for segment in path_url.path_segments()
+                .ok_or_else(|| anyhow::anyhow!("Failed to get path segments from input"))? {
+                segments.push(segment);
+            }
+        }
+        
+        Ok(url)
+    }
 }

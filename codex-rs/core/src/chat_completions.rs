@@ -26,6 +26,7 @@ use crate::flags::OPENAI_STREAM_IDLE_TIMEOUT_MS;
 use crate::models::ContentItem;
 use crate::models::ResponseItem;
 use crate::util::backoff;
+use crate::util::UrlExt;
 
 /// Implementation for the classic Chat Completions API. This is intentionally
 /// minimal: we only stream back plain assistant text.
@@ -62,10 +63,9 @@ pub(crate) async fn stream_chat_completions(
         "stream": true
     });
 
-    let base_url = provider.base_url.trim_end_matches('/');
-    let url = format!("{}/chat/completions", base_url);
+    let url = provider.base_url.clone().append_path("/chat/completions")?.to_string();
 
-    debug!(url, "POST (chat)");
+    debug!("{} POST (chat)", &url);
     trace!("request payload: {}", payload);
 
     let api_key = provider.api_key()?;
