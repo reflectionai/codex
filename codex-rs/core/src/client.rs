@@ -37,6 +37,7 @@ use crate::model_provider_info::ModelProviderInfo;
 use crate::model_provider_info::WireApi;
 use crate::models::ResponseItem;
 use crate::util::backoff;
+use crate::util::UrlExt;
 
 /// When serialized as JSON, this produces a valid "Tool" in the OpenAI
 /// Responses API.
@@ -198,10 +199,8 @@ impl ModelClient {
             stream: true,
         };
 
-        let base_url = self.provider.base_url.clone();
-        let base_url = base_url.trim_end_matches('/');
-        let url = format!("{}/responses", base_url);
-        debug!(url, "POST");
+        let url = self.provider.base_url.clone().append_path("/responses")?.to_string();
+        debug!("{} POST", url);
         trace!("request payload: {}", serde_json::to_string(&payload)?);
 
         let mut attempt = 0;

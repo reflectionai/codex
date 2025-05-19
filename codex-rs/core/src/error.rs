@@ -102,6 +102,9 @@ pub enum CodexErr {
 
     #[error("{0}")]
     EnvVar(EnvVarError),
+
+    #[error(transparent)]
+    InternalError(#[from] anyhow::Error),
 }
 
 #[derive(Debug)]
