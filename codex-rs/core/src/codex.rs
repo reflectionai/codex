@@ -194,7 +194,6 @@ impl Session {
     }
 }
 
-
 /// Mutable state of the agent
 #[derive(Default)]
 struct State {
@@ -767,8 +766,6 @@ async fn run_task(sess: Arc<Session>, sub_id: String, input: Vec<InputItem>) {
         return;
     }
 
-    // Token usage is now tracked automatically at the client level
-
     let mut pending_response_input: Vec<ResponseInputItem> = vec![ResponseInputItem::from(input)];
     loop {
         let mut net_new_turn_input = pending_response_input
@@ -811,10 +808,6 @@ async fn run_task(sess: Arc<Session>, sub_id: String, input: Vec<InputItem>) {
                 net_new_turn_input
             };
 
-        // Token accounting for providers that do not return detailed usage
-        // stats. We add *approximate* counts here and later replace them with
-        // exact ones when `usage_in` becomes available.
-
         let turn_input_messages: Vec<String> = turn_input
             .iter()
             .filter_map(|item| match item {
@@ -828,11 +821,8 @@ async fn run_task(sess: Arc<Session>, sub_id: String, input: Vec<InputItem>) {
                 })
             })
             .collect();
-
         match run_turn(&sess, sub_id.clone(), turn_input).await {
-            Ok((turn_output, _usage_in, _usage_out)) => {
-                // Token usage is now accumulated automatically in the client
-
+            Ok(turn_output) => {
                 let (items, responses): (Vec<_>, Vec<_>) = turn_output
                     .into_iter()
                     .map(|p| (p.item, p.response))
@@ -921,7 +911,7 @@ async fn run_turn(
     sess: &Session,
     sub_id: String,
     input: Vec<ResponseItem>,
-) -> CodexResult<(Vec<ProcessedResponseItem>, u32, u32)> {
+) -> CodexResult<Vec<ProcessedResponseItem>> {
     // Decide whether to use server-side storage (previous_response_id) or disable it
     let (prev_id, store, is_first_turn) = {
         let state = sess.state.lock().unwrap();
@@ -955,7 +945,7 @@ async fn run_turn(
     let mut retries = 0;
     loop {
         match try_run_turn(sess, &sub_id, &prompt).await {
-            Ok(res) => return Ok(res),
+            Ok(output) => return Ok(output),
             Err(CodexErr::Interrupted) => return Err(CodexErr::Interrupted),
             Err(CodexErr::EnvVar(var)) => return Err(CodexErr::EnvVar(var)),
             Err(e) => {
@@ -1001,7 +991,7 @@ async fn try_run_turn(
     sess: &Session,
     sub_id: &str,
     prompt: &Prompt,
-) -> CodexResult<(Vec<ProcessedResponseItem>, u32, u32)> {
+) -> CodexResult<Vec<ProcessedResponseItem>> {
     let mut stream = sess.client.clone().stream(prompt).await?;
 
     // Buffer all incoming messages first as before.
@@ -1011,31 +1001,19 @@ async fn try_run_turn(
     }
 
     let mut output = Vec::new();
-    let mut input_tokens: u32 = 0;
-    let mut output_tokens: u32 = 0;
-
     for event in input_events {
         match event {
             ResponseEvent::OutputItemDone(item) => {
                 let response = handle_response_item(sess, sub_id, item.clone()).await?;
                 output.push(ProcessedResponseItem { item, response });
             }
-            ResponseEvent::Completed { response_id, input_tokens: resp_input_tokens, output_tokens: resp_output_tokens } => {
+            ResponseEvent::Completed { response_id, input_tokens: _resp_input_tokens, output_tokens: _resp_output_tokens } => {
                 let mut state = sess.state.lock().unwrap();
                 state.previous_response_id = Some(response_id);
-                
-                // Add token usage if available
-                if let Some(p) = resp_input_tokens {
-                    input_tokens += p;
-                }
-                if let Some(c) = resp_output_tokens {
-                    output_tokens += c;
-                }
             }
         }
     }
-
-    Ok((output, input_tokens, output_tokens))
+    Ok(output)
 }
 
 async fn handle_response_item(
