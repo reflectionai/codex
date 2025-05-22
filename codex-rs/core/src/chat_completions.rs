@@ -134,6 +134,10 @@ where
     let mut stream = stream.eventsource();
 
     let idle_timeout = *OPENAI_STREAM_IDLE_TIMEOUT_MS;
+    
+    // Track usage information to include in final completion event
+    let mut input_tokens = None;
+    let mut output_tokens = None;
 
     loop {
         let sse = match timeout(idle_timeout, stream.next()).await {
@@ -147,6 +151,8 @@ where
                 let _ = tx_event
                     .send(Ok(ResponseEvent::Completed {
                         response_id: String::new(),
+                        input_tokens,
+                        output_tokens,
                     }))
                     .await;
                 return;
@@ -164,6 +170,8 @@ where
             let _ = tx_event
                 .send(Ok(ResponseEvent::Completed {
                     response_id: String::new(),
+                    input_tokens,
+                    output_tokens,
                 }))
                 .await;
             return;
@@ -175,25 +183,18 @@ where
             Err(_) => continue,
         };
 
-        // Forward usage statistics when requested.
+        // Store usage statistics when received.
+        // For the completion API, keys are "prompt_tokens" and "completion_tokens"
+        // which differs from the keys in the responses API.
         if let Some(usage) = chunk.get("usage") {
-            let prompt_tokens = usage
+            input_tokens = usage
                 .get("prompt_tokens")
-                .or_else(|| usage.get("input_tokens"))
                 .and_then(|v| v.as_u64())
-                .unwrap_or(0) as u32;
-            let completion_tokens = usage
+                .map(|v| v as u32);
+            output_tokens = usage
                 .get("completion_tokens")
-                .or_else(|| usage.get("output_tokens"))
                 .and_then(|v| v.as_u64())
-                .unwrap_or(0) as u32;
-
-            let _ = tx_event
-                .send(Ok(ResponseEvent::Usage {
-                    prompt_tokens,
-                    completion_tokens,
-                }))
-                .await;
+                .map(|v| v as u32);
         }
 
         let content_opt = chunk
@@ -273,7 +274,7 @@ where
                     // Swallow partial event; keep polling.
                     continue;
                 }
-                Poll::Ready(Some(Ok(ResponseEvent::Completed { response_id }))) => {
+                Poll::Ready(Some(Ok(ResponseEvent::Completed { response_id, .. }))) => {
                     if !this.cumulative.is_empty() {
                         let aggregated_item = crate::models::ResponseItem::Message {
                             role: "assistant".to_string(),
@@ -283,7 +284,11 @@ where
                         };
 
                         // Buffer Completed so it is returned *after* the aggregated message.
-                        this.pending_completed = Some(ResponseEvent::Completed { response_id });
+                        this.pending_completed = Some(ResponseEvent::Completed {
+                            response_id,
+                            input_tokens: None,
+                            output_tokens: None,
+                        });
 
                         return Poll::Ready(Some(Ok(ResponseEvent::OutputItemDone(
                             aggregated_item,
@@ -291,11 +296,11 @@ where
                     }
 
                     // Nothing aggregated – forward Completed directly.
-                    return Poll::Ready(Some(Ok(ResponseEvent::Completed { response_id })));
-                }
-                Poll::Ready(Some(Ok(ev))) => {
-                    // Forward any other event types (e.g., Usage).
-                    return Poll::Ready(Some(Ok(ev)));
+                    return Poll::Ready(Some(Ok(ResponseEvent::Completed {
+                        response_id,
+                        input_tokens: None,
+                        output_tokens: None,
+                    })));
                 }
             }
         }

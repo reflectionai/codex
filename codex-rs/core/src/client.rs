@@ -334,6 +334,9 @@ where
     let idle_timeout = *OPENAI_STREAM_IDLE_TIMEOUT_MS;
     // The response id returned from the "complete" message.
     let mut response_id = None;
+    // Token usage information
+    let mut input_tokens = None;
+    let mut output_tokens = None;
 
     loop {
         let sse = match timeout(idle_timeout, stream.next()).await {
@@ -347,7 +350,11 @@ where
             Ok(None) => {
                 match response_id {
                     Some(response_id) => {
-                        let event = ResponseEvent::Completed { response_id };
+                        let event = ResponseEvent::Completed {
+                            response_id,
+                            input_tokens,
+                            output_tokens,
+                        };
                         let _ = tx_event.send(Ok(event)).await;
                     }
                     None => {
@@ -413,23 +420,16 @@ where
                 if let Some(resp_val) = event.response {
                     // Extract usage if present
                     if let Some(usage) = resp_val.get("usage") {
-                        let prompt_tokens = usage
+                        input_tokens = usage
                             .get("prompt_tokens")
                             .or_else(|| usage.get("input_tokens"))
                             .and_then(|v| v.as_u64())
-                            .unwrap_or(0) as u32;
-                        let completion_tokens = usage
+                            .map(|v| v as u32);
+                        output_tokens = usage
                             .get("completion_tokens")
                             .or_else(|| usage.get("output_tokens"))
                             .and_then(|v| v.as_u64())
-                            .unwrap_or(0) as u32;
-
-                        let _ = tx_event
-                            .send(Ok(ResponseEvent::Usage {
-                                prompt_tokens,
-                                completion_tokens,
-                            }))
-                            .await;
+                            .map(|v| v as u32);
                     }
 
                     match serde_json::from_value::<ResponseCompleted>(resp_val) {

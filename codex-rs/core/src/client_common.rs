@@ -47,12 +47,13 @@ impl Prompt {
 #[derive(Debug)]
 pub enum ResponseEvent {
     OutputItemDone(ResponseItem),
-    Completed { response_id: String },
-    Usage {
-        prompt_tokens: u32,
-        completion_tokens: u32,
+    Completed {
+        response_id: String,
+        input_tokens: Option<u32>,
+        output_tokens: Option<u32>,
     },
 }
+
 
 #[derive(Debug, Serialize)]
 pub(crate) struct Reasoning {

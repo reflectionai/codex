@@ -38,6 +38,7 @@ use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::config::Config;
 use crate::conversation_history::ConversationHistory;
+use crate::usage::get_openai_pricing;
 use crate::error::CodexErr;
 use crate::error::Result as CodexResult;
 use crate::error::SandboxErr;
@@ -191,89 +192,6 @@ impl Session {
             .map(PathBuf::from)
             .map_or_else(|| self.cwd.clone(), |p| self.cwd.join(p))
     }
-}
-
-// -----------------------------------------------------------------------------
-// Helper functions (private to this module)
-// -----------------------------------------------------------------------------
-
-/// Very rough approximation for the token count of an arbitrary string. We use
-/// a simple heuristic of 4 characters per token, which is commonly accepted as
-/// “good enough” for estimating costs without a tokenizer. The result is
-/// *never* used for billing – only for displaying approximate usage stats to
-/// the user.
-fn approx_token_count(s: &str) -> usize {
-    // Avoid division by zero for empty strings.
-    if s.is_empty() {
-        0
-    } else {
-        (s.len() + 3) / 4 // round up
-    }
-}
-
-/// Counts the number of tokens contained in a collection of [`ResponseItem`]s
-/// by summing up the textual content of all `InputText` and `OutputText`
-/// elements.
-fn count_tokens_in_items(items: &[ResponseItem]) -> usize {
-    items
-        .iter()
-        .map(|item| match item {
-            ResponseItem::Message { content, .. } => content
-                .iter()
-                .filter_map(|c| match c {
-                    ContentItem::InputText { text } | ContentItem::OutputText { text } => {
-                        Some(approx_token_count(text))
-                    }
-                    _ => None,
-                })
-                .sum::<usize>(),
-            _ => 0,
-        })
-        .sum()
-}
-
-/// Returns the OpenAI per-1K-token pricing (prompt, completion) **in USD** for
-/// a given model name. The list is *not* exhaustive – it only covers the most
-/// common public models so we offer reasonable estimates without hard-coding
-/// every single variant. Unknown models default to `None` so callers can fall
-/// back gracefully.
-fn get_openai_pricing(model: &str) -> Option<(f64, f64)> {
-    // Exact mapping (per *token* rates, not per-1K)
-    let detailed: &[(&str, (f64, f64))] = &[ // (model, (input, output))
-        ("o3", (10.0 / 1_000_000.0, 40.0 / 1_000_000.0)),
-        ("o4-mini", (1.1 / 1_000_000.0, 4.4 / 1_000_000.0)),
-        ("gpt-4.1-nano", (0.1 / 1_000_000.0, 0.4 / 1_000_000.0)),
-        ("gpt-4.1-mini", (0.4 / 1_000_000.0, 1.6 / 1_000_000.0)),
-        ("gpt-4.1", (2.0 / 1_000_000.0, 8.0 / 1_000_000.0)),
-        ("gpt-4o-mini", (0.6 / 1_000_000.0, 2.4 / 1_000_000.0)),
-        ("gpt-4o", (5.0 / 1_000_000.0, 20.0 / 1_000_000.0)),
-        ("codex-mini-latest", (1.5 / 1_000_000.0, 6.0 / 1_000_000.0)),
-    ];
-
-    let key = model.to_ascii_lowercase();
-    if let Some((in_rate, out_rate)) = detailed
-        .iter()
-        .find(|(m, _)| key.starts_with(*m))
-        .map(|(_, r)| *r)
-    {
-        return Some((in_rate, out_rate));
-    }
-
-    // Fallback coarse buckets (per-1K rates → convert to per-token)
-    let per_1k_to_per_token = |x: f64| x / 1000.0;
-    if key.contains("gpt-4o") {
-        return Some((per_1k_to_per_token(0.005), per_1k_to_per_token(0.015)));
-    }
-    if key.contains("gpt-4-turbo") {
-        return Some((per_1k_to_per_token(0.01), per_1k_to_per_token(0.03)));
-    }
-    if key.contains("gpt-4") {
-        return Some((per_1k_to_per_token(0.03), per_1k_to_per_token(0.06)));
-    }
-    if key.contains("gpt-3.5-turbo") {
-        return Some((per_1k_to_per_token(0.0005), per_1k_to_per_token(0.0015)));
-    }
-    None
 }
 
 
@@ -854,8 +772,8 @@ async fn run_task(sess: Arc<Session>, sub_id: String, input: Vec<InputItem>) {
     // counts based on a naive 4-character-per-token heuristic – sufficient
     // for ballpark cost estimation without pulling in a heavyweight tokenizer
     // dependency.
-    let mut total_prompt_tokens: usize = 0;
-    let mut total_completion_tokens: usize = 0;
+    let mut total_input_tokens: usize = 0;
+    let mut total_output_tokens: usize = 0;
 
     let mut pending_response_input: Vec<ResponseInputItem> = vec![ResponseInputItem::from(input)];
     loop {
@@ -917,13 +835,11 @@ async fn run_task(sess: Arc<Session>, sub_id: String, input: Vec<InputItem>) {
             })
             .collect();
 
-        // Pre-compute approximate token count before `turn_input` is moved.
-        let turn_input_approx_tokens = count_tokens_in_items(&turn_input);
         match run_turn(&sess, sub_id.clone(), turn_input).await {
             Ok((turn_output, usage_in, usage_out)) => {
-                // Accumulate exact token usage when available.
-                total_prompt_tokens += usage_in as usize;
-                total_completion_tokens += usage_out as usize;
+                // Accumulate exact token usage from API
+                total_input_tokens += usage_in as usize;
+                total_output_tokens += usage_out as usize;
 
                 let (items, responses): (Vec<_>, Vec<_>) = turn_output
                     .into_iter()
@@ -934,15 +850,6 @@ async fn run_task(sess: Arc<Session>, sub_id: String, input: Vec<InputItem>) {
                     .flatten()
                     .collect::<Vec<ResponseInputItem>>();
                 let last_assistant_message = get_last_assistant_message_from_turn(&items);
-
-                // When usage info not provided (usage_out==0) fall back to approximate.
-                if usage_out == 0 {
-                    total_completion_tokens += count_tokens_in_items(&items);
-                }
-
-                if usage_in == 0 {
-                    total_prompt_tokens += turn_input_approx_tokens;
-                }
 
                 // Only attempt to take the lock if there is something to record.
                 if !items.is_empty() {
@@ -987,18 +894,19 @@ async fn run_task(sess: Arc<Session>, sub_id: String, input: Vec<InputItem>) {
         .client
         .provider()
         .base_url
+        .as_str()
         .contains("openai.com");
 
-    let (total_cost_opt, prompt_tokens_opt, completion_tokens_opt) = if is_openai_provider {
+    let (total_cost_opt, input_tokens_opt, output_tokens_opt) = if is_openai_provider {
         let model = sess.client.model_name();
-        let (prompt_rate, completion_rate) = get_openai_pricing(model).unwrap_or((0.0, 0.0));
+        let (per_input_token_cost, per_output_token_cost) = get_openai_pricing(model).unwrap_or((0.0, 0.0));
         // Rates are per-token. Multiply directly.
-        let cost = (total_prompt_tokens as f64) * prompt_rate
-            + (total_completion_tokens as f64) * completion_rate;
+        let cost = (total_input_tokens as f64) * per_input_token_cost
+            + (total_output_tokens as f64) * per_output_token_cost;
         (
             Some(cost),
-            Some(total_prompt_tokens as u32),
-            Some(total_completion_tokens as u32),
+            Some(total_input_tokens as u32),
+            Some(total_output_tokens as u32),
         )
     } else {
         (None, None, None)
@@ -1008,8 +916,8 @@ async fn run_task(sess: Arc<Session>, sub_id: String, input: Vec<InputItem>) {
         id: sub_id,
         msg: EventMsg::TaskComplete {
             total_cost: total_cost_opt,
-            prompt_tokens: prompt_tokens_opt,
-            completion_tokens: completion_tokens_opt,
+            input_tokens: input_tokens_opt,
+            output_tokens: output_tokens_opt,
         },
     };
     sess.tx_event.send(event).await.ok();
@@ -1118,18 +1026,17 @@ async fn try_run_turn(
                 let response = handle_response_item(sess, sub_id, item.clone()).await?;
                 output.push(ProcessedResponseItem { item, response });
             }
-            ResponseEvent::Completed { response_id } => {
+            ResponseEvent::Completed { response_id, input_tokens, output_tokens } => {
                 let mut state = sess.state.lock().unwrap();
                 state.previous_response_id = Some(response_id);
-                // Do not break – there might be Usage event afterwards, but
-                // in practice Completed comes last; we keep scanning.
-            }
-            ResponseEvent::Usage {
-                prompt_tokens: p,
-                completion_tokens: c,
-            } => {
-                prompt_tokens += p;
-                completion_tokens += c;
+                
+                // Add token usage if available
+                if let Some(p) = input_tokens {
+                    prompt_tokens += p;
+                }
+                if let Some(c) = output_tokens {
+                    completion_tokens += c;
+                }
             }
         }
     }

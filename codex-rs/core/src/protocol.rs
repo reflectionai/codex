@@ -327,9 +327,9 @@ pub enum EventMsg {
         #[serde(skip_serializing_if = "Option::is_none")]
         total_cost: Option<f64>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        prompt_tokens: Option<u32>,
+        input_tokens: Option<u32>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        completion_tokens: Option<u32>,
+        output_tokens: Option<u32>,
     },
 
     /// Agent text output message
