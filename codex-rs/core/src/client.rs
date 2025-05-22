@@ -200,6 +200,7 @@ impl ModelClient {
         };
 
         let url = self.provider.base_url.clone().append_path("/responses")?.to_string();
+
         debug!("{} POST", url);
         trace!("request payload: {}", serde_json::to_string(&payload)?);
 
@@ -213,10 +214,18 @@ impl ModelClient {
                     instructions: None,
                 })
             })?;
-            let res = self
-                .client
-                .post(&url)
-                .bearer_auth(api_key)
+
+            let mut req = self.client.post(&url);
+            // Azure OpenAI Service uses a custom header (`api-key`) instead of
+            // the standard Bearer token. Everything else continues to work
+            // the same.
+            if url.contains(".openai.azure.com") {
+                req = req.header("api-key", api_key);
+            } else {
+                req = req.bearer_auth(api_key);
+            }
+
+            let res = req
                 .header("OpenAI-Beta", "responses=experimental")
                 .header(reqwest::header::ACCEPT, "text/event-stream")
                 .json(&payload)
