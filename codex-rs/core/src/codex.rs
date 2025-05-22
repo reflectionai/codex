@@ -193,6 +193,89 @@ impl Session {
     }
 }
 
+// -----------------------------------------------------------------------------
+// Helper functions (private to this module)
+// -----------------------------------------------------------------------------
+
+/// Very rough approximation for the token count of an arbitrary string. We use
+/// a simple heuristic of 4 characters per token, which is commonly accepted as
+/// “good enough” for estimating costs without a tokenizer. The result is
+/// *never* used for billing – only for displaying approximate usage stats to
+/// the user.
+fn approx_token_count(s: &str) -> usize {
+    // Avoid division by zero for empty strings.
+    if s.is_empty() {
+        0
+    } else {
+        (s.len() + 3) / 4 // round up
+    }
+}
+
+/// Counts the number of tokens contained in a collection of [`ResponseItem`]s
+/// by summing up the textual content of all `InputText` and `OutputText`
+/// elements.
+fn count_tokens_in_items(items: &[ResponseItem]) -> usize {
+    items
+        .iter()
+        .map(|item| match item {
+            ResponseItem::Message { content, .. } => content
+                .iter()
+                .filter_map(|c| match c {
+                    ContentItem::InputText { text } | ContentItem::OutputText { text } => {
+                        Some(approx_token_count(text))
+                    }
+                    _ => None,
+                })
+                .sum::<usize>(),
+            _ => 0,
+        })
+        .sum()
+}
+
+/// Returns the OpenAI per-1K-token pricing (prompt, completion) **in USD** for
+/// a given model name. The list is *not* exhaustive – it only covers the most
+/// common public models so we offer reasonable estimates without hard-coding
+/// every single variant. Unknown models default to `None` so callers can fall
+/// back gracefully.
+fn get_openai_pricing(model: &str) -> Option<(f64, f64)> {
+    // Exact mapping (per *token* rates, not per-1K)
+    let detailed: &[(&str, (f64, f64))] = &[ // (model, (input, output))
+        ("o3", (10.0 / 1_000_000.0, 40.0 / 1_000_000.0)),
+        ("o4-mini", (1.1 / 1_000_000.0, 4.4 / 1_000_000.0)),
+        ("gpt-4.1-nano", (0.1 / 1_000_000.0, 0.4 / 1_000_000.0)),
+        ("gpt-4.1-mini", (0.4 / 1_000_000.0, 1.6 / 1_000_000.0)),
+        ("gpt-4.1", (2.0 / 1_000_000.0, 8.0 / 1_000_000.0)),
+        ("gpt-4o-mini", (0.6 / 1_000_000.0, 2.4 / 1_000_000.0)),
+        ("gpt-4o", (5.0 / 1_000_000.0, 20.0 / 1_000_000.0)),
+    ];
+
+    let key = model.to_ascii_lowercase();
+    if let Some((in_rate, out_rate)) = detailed
+        .iter()
+        .find(|(m, _)| key.starts_with(*m))
+        .map(|(_, r)| *r)
+    {
+        return Some((in_rate, out_rate));
+    }
+
+    // Fallback coarse buckets (per-1K rates → convert to per-token)
+    let per_1k_to_per_token = |x: f64| x / 1000.0;
+    if key.contains("gpt-4o") {
+        return Some((per_1k_to_per_token(0.005), per_1k_to_per_token(0.015)));
+    }
+    if key.contains("gpt-4-turbo") {
+        return Some((per_1k_to_per_token(0.01), per_1k_to_per_token(0.03)));
+    }
+    if key.contains("gpt-4") {
+        return Some((per_1k_to_per_token(0.03), per_1k_to_per_token(0.06)));
+    }
+    if key.contains("gpt-3.5-turbo") {
+        return Some((per_1k_to_per_token(0.0005), per_1k_to_per_token(0.0015)));
+    }
+    None
+}
+
+
 /// Mutable state of the agent
 #[derive(Default)]
 struct State {
@@ -765,6 +848,14 @@ async fn run_task(sess: Arc<Session>, sub_id: String, input: Vec<InputItem>) {
         return;
     }
 
+    // Track overall token usage for this task so we can expose usage/cost
+    // statistics in the final `TaskComplete` event. These are *approximate*
+    // counts based on a naive 4-character-per-token heuristic – sufficient
+    // for ballpark cost estimation without pulling in a heavyweight tokenizer
+    // dependency.
+    let mut total_prompt_tokens: usize = 0;
+    let mut total_completion_tokens: usize = 0;
+
     let mut pending_response_input: Vec<ResponseInputItem> = vec![ResponseInputItem::from(input)];
     loop {
         let mut net_new_turn_input = pending_response_input
@@ -807,6 +898,10 @@ async fn run_task(sess: Arc<Session>, sub_id: String, input: Vec<InputItem>) {
                 net_new_turn_input
             };
 
+        // Token accounting for providers that do not return detailed usage
+        // stats. We add *approximate* counts here and later replace them with
+        // exact ones when `usage_in` becomes available.
+
         let turn_input_messages: Vec<String> = turn_input
             .iter()
             .filter_map(|item| match item {
@@ -820,8 +915,15 @@ async fn run_task(sess: Arc<Session>, sub_id: String, input: Vec<InputItem>) {
                 })
             })
             .collect();
+
+        // Pre-compute approximate token count before `turn_input` is moved.
+        let turn_input_approx_tokens = count_tokens_in_items(&turn_input);
         match run_turn(&sess, sub_id.clone(), turn_input).await {
-            Ok(turn_output) => {
+            Ok((turn_output, usage_in, usage_out)) => {
+                // Accumulate exact token usage when available.
+                total_prompt_tokens += usage_in as usize;
+                total_completion_tokens += usage_out as usize;
+
                 let (items, responses): (Vec<_>, Vec<_>) = turn_output
                     .into_iter()
                     .map(|p| (p.item, p.response))
@@ -831,6 +933,15 @@ async fn run_task(sess: Arc<Session>, sub_id: String, input: Vec<InputItem>) {
                     .flatten()
                     .collect::<Vec<ResponseInputItem>>();
                 let last_assistant_message = get_last_assistant_message_from_turn(&items);
+
+                // When usage info not provided (usage_out==0) fall back to approximate.
+                if usage_out == 0 {
+                    total_completion_tokens += count_tokens_in_items(&items);
+                }
+
+                if usage_in == 0 {
+                    total_prompt_tokens += turn_input_approx_tokens;
+                }
 
                 // Only attempt to take the lock if there is something to record.
                 if !items.is_empty() {
@@ -869,9 +980,36 @@ async fn run_task(sess: Arc<Session>, sub_id: String, input: Vec<InputItem>) {
         }
     }
     sess.remove_task(&sub_id);
+
+    // Calculate total cost for OpenAI models if possible.
+    let is_openai_provider = sess
+        .client
+        .provider()
+        .base_url
+        .contains("openai.com");
+
+    let (total_cost_opt, prompt_tokens_opt, completion_tokens_opt) = if is_openai_provider {
+        let model = sess.client.model_name();
+        let (prompt_rate, completion_rate) = get_openai_pricing(model).unwrap_or((0.0, 0.0));
+        // Rates are per-token. Multiply directly.
+        let cost = (total_prompt_tokens as f64) * prompt_rate
+            + (total_completion_tokens as f64) * completion_rate;
+        (
+            Some(cost),
+            Some(total_prompt_tokens as u32),
+            Some(total_completion_tokens as u32),
+        )
+    } else {
+        (None, None, None)
+    };
+
     let event = Event {
         id: sub_id,
-        msg: EventMsg::TaskComplete,
+        msg: EventMsg::TaskComplete {
+            total_cost: total_cost_opt,
+            prompt_tokens: prompt_tokens_opt,
+            completion_tokens: completion_tokens_opt,
+        },
     };
     sess.tx_event.send(event).await.ok();
 }
@@ -880,7 +1018,7 @@ async fn run_turn(
     sess: &Session,
     sub_id: String,
     input: Vec<ResponseItem>,
-) -> CodexResult<Vec<ProcessedResponseItem>> {
+) -> CodexResult<(Vec<ProcessedResponseItem>, u32, u32)> {
     // Decide whether to use server-side storage (previous_response_id) or disable it
     let (prev_id, store, is_first_turn) = {
         let state = sess.state.lock().unwrap();
@@ -914,7 +1052,7 @@ async fn run_turn(
     let mut retries = 0;
     loop {
         match try_run_turn(sess, &sub_id, &prompt).await {
-            Ok(output) => return Ok(output),
+            Ok(res) => return Ok(res),
             Err(CodexErr::Interrupted) => return Err(CodexErr::Interrupted),
             Err(CodexErr::EnvVar(var)) => return Err(CodexErr::EnvVar(var)),
             Err(e) => {
@@ -960,18 +1098,20 @@ async fn try_run_turn(
     sess: &Session,
     sub_id: &str,
     prompt: &Prompt,
-) -> CodexResult<Vec<ProcessedResponseItem>> {
+) -> CodexResult<(Vec<ProcessedResponseItem>, u32, u32)> {
     let mut stream = sess.client.clone().stream(prompt).await?;
 
-    // Buffer all the incoming messages from the stream first, then execute them.
-    // If we execute a function call in the middle of handling the stream, it can time out.
-    let mut input = Vec::new();
+    // Buffer all incoming messages first as before.
+    let mut input_events = Vec::new();
     while let Some(event) = stream.next().await {
-        input.push(event?);
+        input_events.push(event?);
     }
 
     let mut output = Vec::new();
-    for event in input {
+    let mut prompt_tokens: u32 = 0;
+    let mut completion_tokens: u32 = 0;
+
+    for event in input_events {
         match event {
             ResponseEvent::OutputItemDone(item) => {
                 let response = handle_response_item(sess, sub_id, item.clone()).await?;
@@ -980,11 +1120,20 @@ async fn try_run_turn(
             ResponseEvent::Completed { response_id } => {
                 let mut state = sess.state.lock().unwrap();
                 state.previous_response_id = Some(response_id);
-                break;
+                // Do not break – there might be Usage event afterwards, but
+                // in practice Completed comes last; we keep scanning.
+            }
+            ResponseEvent::Usage {
+                prompt_tokens: p,
+                completion_tokens: c,
+            } => {
+                prompt_tokens += p;
+                completion_tokens += c;
             }
         }
     }
-    Ok(output)
+
+    Ok((output, prompt_tokens, completion_tokens))
 }
 
 async fn handle_response_item(

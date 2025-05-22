@@ -60,7 +60,8 @@ pub(crate) async fn stream_chat_completions(
     let payload = json!({
         "model": model,
         "messages": messages,
-        "stream": true
+        "stream": true,
+        "stream_options": {"include_usage": true}
     });
 
     let url = provider.base_url.clone().append_path("/chat/completions")?.to_string();
@@ -174,6 +175,27 @@ where
             Err(_) => continue,
         };
 
+        // Forward usage statistics when requested.
+        if let Some(usage) = chunk.get("usage") {
+            let prompt_tokens = usage
+                .get("prompt_tokens")
+                .or_else(|| usage.get("input_tokens"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
+            let completion_tokens = usage
+                .get("completion_tokens")
+                .or_else(|| usage.get("output_tokens"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
+
+            let _ = tx_event
+                .send(Ok(ResponseEvent::Usage {
+                    prompt_tokens,
+                    completion_tokens,
+                }))
+                .await;
+        }
+
         let content_opt = chunk
             .get("choices")
             .and_then(|c| c.get(0))
@@ -270,7 +292,11 @@ where
 
                     // Nothing aggregated – forward Completed directly.
                     return Poll::Ready(Some(Ok(ResponseEvent::Completed { response_id })));
-                } // No other `Ok` variants exist at the moment, continue polling.
+                }
+                Poll::Ready(Some(Ok(ev))) => {
+                    // Forward any other event types (e.g., Usage).
+                    return Poll::Ready(Some(Ok(ev)));
+                }
             }
         }
     }

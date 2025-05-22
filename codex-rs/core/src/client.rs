@@ -118,6 +118,19 @@ impl ModelClient {
         }
     }
 
+    /// Returns the model name used for this client. Helper so callers inside
+    /// the business-logic layer (e.g. for pricing calculations) do not need
+    /// to reach into private fields.
+    pub fn model_name(&self) -> &str {
+        &self.model
+    }
+
+    /// Expose the provider so higher-level modules (e.g. cost accounting) can
+    /// inspect metadata without breaking encapsulation.
+    pub fn provider(&self) -> &ModelProviderInfo {
+        &self.provider
+    }
+
     /// Dispatches to either the Responses or Chat implementation depending on
     /// the provider config.  Public callers always invoke `stream()` – the
     /// specialised helpers are private to avoid accidental misuse.
@@ -398,6 +411,27 @@ where
             // Final response completed – includes array of output items & id
             "response.completed" => {
                 if let Some(resp_val) = event.response {
+                    // Extract usage if present
+                    if let Some(usage) = resp_val.get("usage") {
+                        let prompt_tokens = usage
+                            .get("prompt_tokens")
+                            .or_else(|| usage.get("input_tokens"))
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0) as u32;
+                        let completion_tokens = usage
+                            .get("completion_tokens")
+                            .or_else(|| usage.get("output_tokens"))
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0) as u32;
+
+                        let _ = tx_event
+                            .send(Ok(ResponseEvent::Usage {
+                                prompt_tokens,
+                                completion_tokens,
+                            }))
+                            .await;
+                    }
+
                     match serde_json::from_value::<ResponseCompleted>(resp_val) {
                         Ok(r) => {
                             response_id = Some(r.id);
@@ -407,7 +441,7 @@ where
                             continue;
                         }
                     };
-                };
+                }
             }
             other => debug!(other, "sse event"),
         }
