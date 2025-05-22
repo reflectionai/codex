@@ -24,3 +24,25 @@ pub fn get_openai_pricing(model: &str) -> Option<(f64, f64)> {
       .find(|(m, _)| key.starts_with(*m))
       .map(|(_, r)| *r)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_openai_pricing() {
+        // Test exact matches
+        assert_eq!(get_openai_pricing("gpt-4o-mini"), Some((0.6 / 1_000_000.0, 2.4 / 1_000_000.0)));
+        assert_eq!(get_openai_pricing("gpt-4o"), Some((5.0 / 1_000_000.0, 20.0 / 1_000_000.0)));
+        assert_eq!(get_openai_pricing("codex-mini-latest"), Some((1.5 / 1_000_000.0, 6.0 / 1_000_000.0)));
+        
+        // Test model variants (should match prefix)
+        assert_eq!(get_openai_pricing("gpt-4o-2024-11-20"), Some((5.0 / 1_000_000.0, 20.0 / 1_000_000.0)));
+        
+        // Test unknown model
+        assert_eq!(get_openai_pricing("unknown-model"), None);
+        
+        // Test case insensitive
+        assert_eq!(get_openai_pricing("GPT-4O-MINI"), Some((0.6 / 1_000_000.0, 2.4 / 1_000_000.0)));
+    }
+}

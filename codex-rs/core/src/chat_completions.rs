@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -35,6 +36,7 @@ pub(crate) async fn stream_chat_completions(
     model: &str,
     client: &reqwest::Client,
     provider: &ModelProviderInfo,
+    token_aggregator: Arc<std::sync::Mutex<crate::client_common::TokenAggregator>>,
 ) -> Result<ResponseStream> {
     // Build messages array
     let mut messages = Vec::<serde_json::Value>::new();
@@ -88,7 +90,7 @@ pub(crate) async fn stream_chat_completions(
             Ok(resp) if resp.status().is_success() => {
                 let (tx_event, rx_event) = mpsc::channel::<Result<ResponseEvent>>(16);
                 let stream = resp.bytes_stream().map_err(CodexErr::Reqwest);
-                tokio::spawn(process_chat_sse(stream, tx_event));
+                tokio::spawn(process_chat_sse(stream, tx_event, Arc::clone(&token_aggregator)));
                 return Ok(ResponseStream { rx_event });
             }
             Ok(res) => {
@@ -127,7 +129,11 @@ pub(crate) async fn stream_chat_completions(
 /// Lightweight SSE processor for the Chat Completions streaming format. The
 /// output is mapped onto Codex's internal [`ResponseEvent`] so that the rest
 /// of the pipeline can stay agnostic of the underlying wire format.
-async fn process_chat_sse<S>(stream: S, tx_event: mpsc::Sender<Result<ResponseEvent>>)
+async fn process_chat_sse<S>(
+    stream: S, 
+    tx_event: mpsc::Sender<Result<ResponseEvent>>,
+    token_aggregator: Arc<std::sync::Mutex<crate::client_common::TokenAggregator>>,
+)
 where
     S: Stream<Item = Result<Bytes>> + Unpin,
 {
@@ -184,17 +190,24 @@ where
         };
 
         // Store usage statistics when received.
-        // For the completion API, keys are "prompt_tokens" and "completion_tokens"
-        // which differs from the keys in the responses API.
+        // Chat Completions API uses "prompt_tokens" and "completion_tokens"
         if let Some(usage) = chunk.get("usage") {
-            input_tokens = usage
+            let usage_input_tokens = usage
                 .get("prompt_tokens")
                 .and_then(|v| v.as_u64())
-                .map(|v| v as u32);
-            output_tokens = usage
+                .map(|v| v as u32)
+                .unwrap_or(0);
+            let usage_output_tokens = usage
                 .get("completion_tokens")
                 .and_then(|v| v.as_u64())
-                .map(|v| v as u32);
+                .map(|v| v as u32)
+                .unwrap_or(0);
+            
+            // Add to session aggregator
+            token_aggregator.lock().unwrap().add_usage(usage_input_tokens, usage_output_tokens);
+            
+            input_tokens = Some(usage_input_tokens);
+            output_tokens = Some(usage_output_tokens);
         }
 
         let content_opt = chunk

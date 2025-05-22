@@ -767,13 +767,7 @@ async fn run_task(sess: Arc<Session>, sub_id: String, input: Vec<InputItem>) {
         return;
     }
 
-    // Track overall token usage for this task so we can expose usage/cost
-    // statistics in the final `TaskComplete` event. These are *approximate*
-    // counts based on a naive 4-character-per-token heuristic – sufficient
-    // for ballpark cost estimation without pulling in a heavyweight tokenizer
-    // dependency.
-    let mut total_input_tokens: usize = 0;
-    let mut total_output_tokens: usize = 0;
+    // Token usage is now tracked automatically at the client level
 
     let mut pending_response_input: Vec<ResponseInputItem> = vec![ResponseInputItem::from(input)];
     loop {
@@ -836,10 +830,8 @@ async fn run_task(sess: Arc<Session>, sub_id: String, input: Vec<InputItem>) {
             .collect();
 
         match run_turn(&sess, sub_id.clone(), turn_input).await {
-            Ok((turn_output, usage_in, usage_out)) => {
-                // Accumulate exact token usage from API
-                total_input_tokens += usage_in as usize;
-                total_output_tokens += usage_out as usize;
+            Ok((turn_output, _usage_in, _usage_out)) => {
+                // Token usage is now accumulated automatically in the client
 
                 let (items, responses): (Vec<_>, Vec<_>) = turn_output
                     .into_iter()
@@ -889,7 +881,9 @@ async fn run_task(sess: Arc<Session>, sub_id: String, input: Vec<InputItem>) {
     }
     sess.remove_task(&sub_id);
 
-    // Calculate total cost for OpenAI models if possible.
+    // Get aggregated usage from client and calculate cost for OpenAI models
+    let (total_input_tokens, total_output_tokens) = sess.client.get_session_usage();
+    
     let is_openai_provider = sess
         .client
         .provider()
@@ -905,8 +899,8 @@ async fn run_task(sess: Arc<Session>, sub_id: String, input: Vec<InputItem>) {
             + (total_output_tokens as f64) * per_output_token_cost;
         (
             Some(cost),
-            Some(total_input_tokens as u32),
-            Some(total_output_tokens as u32),
+            Some(total_input_tokens),
+            Some(total_output_tokens),
         )
     } else {
         (None, None, None)

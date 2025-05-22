@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::io::BufRead;
 use std::path::Path;
+use std::sync::Arc;
 use std::sync::LazyLock;
 use std::time::Duration;
 
@@ -27,6 +28,7 @@ use crate::client_common::Reasoning;
 use crate::client_common::ResponseEvent;
 use crate::client_common::ResponseStream;
 use crate::client_common::Summary;
+use crate::client_common::TokenAggregator;
 use crate::error::CodexErr;
 use crate::error::EnvVarError;
 use crate::error::Result;
@@ -107,6 +109,7 @@ pub struct ModelClient {
     model: String,
     client: reqwest::Client,
     provider: ModelProviderInfo,
+    token_aggregator: Arc<std::sync::Mutex<TokenAggregator>>,
 }
 
 impl ModelClient {
@@ -115,6 +118,7 @@ impl ModelClient {
             model: model.to_string(),
             client: reqwest::Client::new(),
             provider,
+            token_aggregator: Arc::new(std::sync::Mutex::new(TokenAggregator::new())),
         }
     }
 
@@ -131,6 +135,16 @@ impl ModelClient {
         &self.provider
     }
 
+    /// Get cumulative token usage for this session
+    pub fn get_session_usage(&self) -> (u32, u32) {
+        self.token_aggregator.lock().unwrap().get_totals()
+    }
+    
+    /// Reset token counters (e.g., for new session)
+    pub fn reset_usage(&self) {
+        self.token_aggregator.lock().unwrap().reset()
+    }
+
     /// Dispatches to either the Responses or Chat implementation depending on
     /// the provider config.  Public callers always invoke `stream()` – the
     /// specialised helpers are private to avoid accidental misuse.
@@ -140,7 +154,7 @@ impl ModelClient {
             WireApi::Chat => {
                 // Create the raw streaming connection first.
                 let response_stream =
-                    stream_chat_completions(prompt, &self.model, &self.client, &self.provider)
+                    stream_chat_completions(prompt, &self.model, &self.client, &self.provider, Arc::clone(&self.token_aggregator))
                         .await?;
 
                 // Wrap it with the aggregation adapter so callers see *only*
@@ -250,7 +264,7 @@ impl ModelClient {
 
                     // spawn task to process SSE
                     let stream = resp.bytes_stream().map_err(CodexErr::Reqwest);
-                    tokio::spawn(process_sse(stream, tx_event));
+                    tokio::spawn(process_sse(stream, tx_event, Arc::clone(&self.token_aggregator)));
 
                     return Ok(ResponseStream { rx_event });
                 }
@@ -324,7 +338,11 @@ struct ResponseCompleted {
     id: String,
 }
 
-async fn process_sse<S>(stream: S, tx_event: mpsc::Sender<Result<ResponseEvent>>)
+async fn process_sse<S>(
+    stream: S, 
+    tx_event: mpsc::Sender<Result<ResponseEvent>>,
+    token_aggregator: Arc<std::sync::Mutex<TokenAggregator>>,
+)
 where
     S: Stream<Item = Result<Bytes>> + Unpin,
 {
@@ -418,16 +436,24 @@ where
             // Final response completed – includes array of output items & id
             "response.completed" => {
                 if let Some(resp_val) = event.response {
-                    // Extract usage if present
+                    // Extract usage if present (Responses API uses input_tokens/output_tokens)
                     if let Some(usage) = resp_val.get("usage") {
-                        input_tokens = usage
+                        let usage_input_tokens = usage
                             .get("input_tokens")
                             .and_then(|v| v.as_u64())
-                            .map(|v| v as u32);
-                        output_tokens = usage
+                            .map(|v| v as u32)
+                            .unwrap_or(0);
+                        let usage_output_tokens = usage
                             .get("output_tokens")
                             .and_then(|v| v.as_u64())
-                            .map(|v| v as u32);
+                            .map(|v| v as u32)
+                            .unwrap_or(0);
+                        
+                        // Add to session aggregator
+                        token_aggregator.lock().unwrap().add_usage(usage_input_tokens, usage_output_tokens);
+                        
+                        input_tokens = Some(usage_input_tokens);
+                        output_tokens = Some(usage_output_tokens);
                     }
 
                     match serde_json::from_value::<ResponseCompleted>(resp_val) {
@@ -461,6 +487,7 @@ async fn stream_from_fixture(path: impl AsRef<Path>) -> Result<ResponseStream> {
 
     let rdr = std::io::Cursor::new(content);
     let stream = ReaderStream::new(rdr).map_err(CodexErr::Io);
-    tokio::spawn(process_sse(stream, tx_event));
+    let dummy_aggregator = Arc::new(std::sync::Mutex::new(TokenAggregator::new()));
+    tokio::spawn(process_sse(stream, tx_event, dummy_aggregator));
     Ok(ResponseStream { rx_event })
 }

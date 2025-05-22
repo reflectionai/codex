@@ -54,6 +54,31 @@ pub enum ResponseEvent {
     },
 }
 
+#[derive(Debug, Default)]
+pub struct TokenAggregator {
+    total_input_tokens: u32,
+    total_output_tokens: u32,
+}
+
+impl TokenAggregator {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    
+    pub fn add_usage(&mut self, input_tokens: u32, output_tokens: u32) {
+        self.total_input_tokens += input_tokens;
+        self.total_output_tokens += output_tokens;
+    }
+    
+    pub fn get_totals(&self) -> (u32, u32) {
+        (self.total_input_tokens, self.total_output_tokens)
+    }
+    
+    pub fn reset(&mut self) {
+        self.total_input_tokens = 0;
+        self.total_output_tokens = 0;
+    }
+}
 
 #[derive(Debug, Serialize)]
 pub(crate) struct Reasoning {
