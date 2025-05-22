@@ -1017,8 +1017,8 @@ async fn try_run_turn(
     }
 
     let mut output = Vec::new();
-    let mut prompt_tokens: u32 = 0;
-    let mut completion_tokens: u32 = 0;
+    let mut input_tokens: u32 = 0;
+    let mut output_tokens: u32 = 0;
 
     for event in input_events {
         match event {
@@ -1026,22 +1026,22 @@ async fn try_run_turn(
                 let response = handle_response_item(sess, sub_id, item.clone()).await?;
                 output.push(ProcessedResponseItem { item, response });
             }
-            ResponseEvent::Completed { response_id, input_tokens, output_tokens } => {
+            ResponseEvent::Completed { response_id, input_tokens: resp_input_tokens, output_tokens: resp_output_tokens } => {
                 let mut state = sess.state.lock().unwrap();
                 state.previous_response_id = Some(response_id);
                 
                 // Add token usage if available
-                if let Some(p) = input_tokens {
-                    prompt_tokens += p;
+                if let Some(p) = resp_input_tokens {
+                    input_tokens += p;
                 }
-                if let Some(c) = output_tokens {
-                    completion_tokens += c;
+                if let Some(c) = resp_output_tokens {
+                    output_tokens += c;
                 }
             }
         }
     }
 
-    Ok((output, prompt_tokens, completion_tokens))
+    Ok((output, input_tokens, output_tokens))
 }
 
 async fn handle_response_item(

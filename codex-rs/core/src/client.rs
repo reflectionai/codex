@@ -421,13 +421,11 @@ where
                     // Extract usage if present
                     if let Some(usage) = resp_val.get("usage") {
                         input_tokens = usage
-                            .get("prompt_tokens")
-                            .or_else(|| usage.get("input_tokens"))
+                            .get("input_tokens")
                             .and_then(|v| v.as_u64())
                             .map(|v| v as u32);
                         output_tokens = usage
-                            .get("completion_tokens")
-                            .or_else(|| usage.get("output_tokens"))
+                            .get("output_tokens")
                             .and_then(|v| v.as_u64())
                             .map(|v| v as u32);
                     }
