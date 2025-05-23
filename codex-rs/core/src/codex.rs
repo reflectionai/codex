@@ -38,7 +38,6 @@ use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::config::Config;
 use crate::conversation_history::ConversationHistory;
-use crate::usage::get_openai_pricing;
 use crate::error::CodexErr;
 use crate::error::Result as CodexResult;
 use crate::error::SandboxErr;
@@ -82,6 +81,7 @@ use crate::rollout::RolloutRecorder;
 use crate::safety::SafetyCheck;
 use crate::safety::assess_command_safety;
 use crate::safety::assess_patch_safety;
+use crate::usage::get_openai_pricing;
 use crate::user_notification::UserNotification;
 use crate::util::backoff;
 
@@ -872,8 +872,8 @@ async fn run_task(sess: Arc<Session>, sub_id: String, input: Vec<InputItem>) {
     sess.remove_task(&sub_id);
 
     // Get aggregated usage from client and calculate cost for OpenAI models
-    let (total_input_tokens, total_output_tokens) = sess.client.get_session_usage();
-    
+    let (total_input_tokens, total_output_tokens) = sess.client.get_session_token_usage();
+
     let is_openai_provider = sess
         .client
         .provider()
@@ -883,7 +883,8 @@ async fn run_task(sess: Arc<Session>, sub_id: String, input: Vec<InputItem>) {
 
     let (total_cost_opt, input_tokens_opt, output_tokens_opt) = if is_openai_provider {
         let model = sess.client.model_name();
-        let (per_input_token_cost, per_output_token_cost) = get_openai_pricing(model).unwrap_or((0.0, 0.0));
+        let (per_input_token_cost, per_output_token_cost) =
+            get_openai_pricing(model).unwrap_or((0.0, 0.0));
         // Rates are per-token. Multiply directly.
         let cost = (total_input_tokens as f64) * per_input_token_cost
             + (total_output_tokens as f64) * per_output_token_cost;
@@ -995,21 +996,22 @@ async fn try_run_turn(
     let mut stream = sess.client.clone().stream(prompt).await?;
 
     // Buffer all incoming messages first as before.
-    let mut input_events = Vec::new();
+    let mut input = Vec::new();
     while let Some(event) = stream.next().await {
-        input_events.push(event?);
+        input.push(event?);
     }
 
     let mut output = Vec::new();
-    for event in input_events {
+    for event in input {
         match event {
             ResponseEvent::OutputItemDone(item) => {
                 let response = handle_response_item(sess, sub_id, item.clone()).await?;
                 output.push(ProcessedResponseItem { item, response });
             }
-            ResponseEvent::Completed { response_id, input_tokens: _resp_input_tokens, output_tokens: _resp_output_tokens } => {
+            ResponseEvent::Completed { response_id, .. } => {
                 let mut state = sess.state.lock().unwrap();
                 state.previous_response_id = Some(response_id);
+                break;
             }
         }
     }

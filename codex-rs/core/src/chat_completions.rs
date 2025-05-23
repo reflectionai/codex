@@ -26,8 +26,8 @@ use crate::flags::OPENAI_REQUEST_MAX_RETRIES;
 use crate::flags::OPENAI_STREAM_IDLE_TIMEOUT_MS;
 use crate::models::ContentItem;
 use crate::models::ResponseItem;
-use crate::util::backoff;
 use crate::util::UrlExt;
+use crate::util::backoff;
 
 /// Implementation for the classic Chat Completions API. This is intentionally
 /// minimal: we only stream back plain assistant text.
@@ -66,7 +66,11 @@ pub(crate) async fn stream_chat_completions(
         "stream_options": {"include_usage": true}
     });
 
-    let url = provider.base_url.clone().append_path("/chat/completions")?.to_string();
+    let url = provider
+        .base_url
+        .clone()
+        .append_path("/chat/completions")?
+        .to_string();
 
     debug!("{} POST (chat)", &url);
     trace!("request payload: {}", payload);
@@ -90,7 +94,11 @@ pub(crate) async fn stream_chat_completions(
             Ok(resp) if resp.status().is_success() => {
                 let (tx_event, rx_event) = mpsc::channel::<Result<ResponseEvent>>(16);
                 let stream = resp.bytes_stream().map_err(CodexErr::Reqwest);
-                tokio::spawn(process_chat_sse(stream, tx_event, Arc::clone(&token_aggregator)));
+                tokio::spawn(process_chat_sse(
+                    stream,
+                    tx_event,
+                    Arc::clone(&token_aggregator),
+                ));
                 return Ok(ResponseStream { rx_event });
             }
             Ok(res) => {
@@ -130,17 +138,16 @@ pub(crate) async fn stream_chat_completions(
 /// output is mapped onto Codex's internal [`ResponseEvent`] so that the rest
 /// of the pipeline can stay agnostic of the underlying wire format.
 async fn process_chat_sse<S>(
-    stream: S, 
+    stream: S,
     tx_event: mpsc::Sender<Result<ResponseEvent>>,
     token_aggregator: Arc<std::sync::Mutex<crate::client_common::TokenAggregator>>,
-)
-where
+) where
     S: Stream<Item = Result<Bytes>> + Unpin,
 {
     let mut stream = stream.eventsource();
 
     let idle_timeout = *OPENAI_STREAM_IDLE_TIMEOUT_MS;
-    
+
     // Track usage information to include in final completion event
     let mut input_tokens = None;
     let mut output_tokens = None;
@@ -202,10 +209,13 @@ where
                 .and_then(|v| v.as_u64())
                 .map(|v| v as u32)
                 .unwrap_or(0);
-            
+
             // Add to session aggregator
-            token_aggregator.lock().unwrap().add_usage(usage_input_tokens, usage_output_tokens);
-            
+            token_aggregator
+                .lock()
+                .unwrap()
+                .add_token_usage(usage_input_tokens, usage_output_tokens);
+
             input_tokens = Some(usage_input_tokens);
             output_tokens = Some(usage_output_tokens);
         }

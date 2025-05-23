@@ -38,8 +38,8 @@ use crate::flags::OPENAI_STREAM_IDLE_TIMEOUT_MS;
 use crate::model_provider_info::ModelProviderInfo;
 use crate::model_provider_info::WireApi;
 use crate::models::ResponseItem;
-use crate::util::backoff;
 use crate::util::UrlExt;
+use crate::util::backoff;
 
 /// When serialized as JSON, this produces a valid "Tool" in the OpenAI
 /// Responses API.
@@ -136,13 +136,8 @@ impl ModelClient {
     }
 
     /// Get cumulative token usage for this session
-    pub fn get_session_usage(&self) -> (u32, u32) {
-        self.token_aggregator.lock().unwrap().get_totals()
-    }
-    
-    /// Reset token counters (e.g., for new session)
-    pub fn reset_usage(&self) {
-        self.token_aggregator.lock().unwrap().reset()
+    pub fn get_session_token_usage(&self) -> (u32, u32) {
+        self.token_aggregator.lock().unwrap().get_token_totals()
     }
 
     /// Dispatches to either the Responses or Chat implementation depending on
@@ -153,9 +148,14 @@ impl ModelClient {
             WireApi::Responses => self.stream_responses(prompt).await,
             WireApi::Chat => {
                 // Create the raw streaming connection first.
-                let response_stream =
-                    stream_chat_completions(prompt, &self.model, &self.client, &self.provider, Arc::clone(&self.token_aggregator))
-                        .await?;
+                let response_stream = stream_chat_completions(
+                    prompt,
+                    &self.model,
+                    &self.client,
+                    &self.provider,
+                    Arc::clone(&self.token_aggregator),
+                )
+                .await?;
 
                 // Wrap it with the aggregation adapter so callers see *only*
                 // the final assistant message per turn (matching the
@@ -226,7 +226,12 @@ impl ModelClient {
             stream: true,
         };
 
-        let url = self.provider.base_url.clone().append_path("/responses")?.to_string();
+        let url = self
+            .provider
+            .base_url
+            .clone()
+            .append_path("/responses")?
+            .to_string();
 
         debug!("{} POST", url);
         trace!("request payload: {}", serde_json::to_string(&payload)?);
@@ -264,7 +269,11 @@ impl ModelClient {
 
                     // spawn task to process SSE
                     let stream = resp.bytes_stream().map_err(CodexErr::Reqwest);
-                    tokio::spawn(process_sse(stream, tx_event, Arc::clone(&self.token_aggregator)));
+                    tokio::spawn(process_sse(
+                        stream,
+                        tx_event,
+                        Arc::clone(&self.token_aggregator),
+                    ));
 
                     return Ok(ResponseStream { rx_event });
                 }
@@ -339,11 +348,10 @@ struct ResponseCompleted {
 }
 
 async fn process_sse<S>(
-    stream: S, 
+    stream: S,
     tx_event: mpsc::Sender<Result<ResponseEvent>>,
     token_aggregator: Arc<std::sync::Mutex<TokenAggregator>>,
-)
-where
+) where
     S: Stream<Item = Result<Bytes>> + Unpin,
 {
     let mut stream = stream.eventsource();
@@ -441,17 +449,17 @@ where
                         let usage_input_tokens = usage
                             .get("input_tokens")
                             .and_then(|v| v.as_u64())
-                            .map(|v| v as u32)
-                            .unwrap_or(0);
+                            .unwrap_or(0) as u32;
                         let usage_output_tokens = usage
                             .get("output_tokens")
                             .and_then(|v| v.as_u64())
-                            .map(|v| v as u32)
-                            .unwrap_or(0);
-                        
-                        // Add to session aggregator
-                        token_aggregator.lock().unwrap().add_usage(usage_input_tokens, usage_output_tokens);
-                        
+                            .unwrap_or(0) as u32;
+
+                        token_aggregator
+                            .lock()
+                            .unwrap()
+                            .add_token_usage(usage_input_tokens, usage_output_tokens);
+
                         input_tokens = Some(usage_input_tokens);
                         output_tokens = Some(usage_output_tokens);
                     }
@@ -465,7 +473,7 @@ where
                             continue;
                         }
                     };
-                }
+                };
             }
             other => debug!(other, "sse event"),
         }
