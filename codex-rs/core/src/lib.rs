@@ -26,6 +26,7 @@ pub mod mcp_server_config;
 mod mcp_tool_call;
 mod message_history;
 mod model_provider_info;
+pub mod usage;
 pub use model_provider_info::ModelProviderInfo;
 pub use model_provider_info::WireApi;
 mod models;

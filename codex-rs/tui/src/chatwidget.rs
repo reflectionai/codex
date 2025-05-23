@@ -246,7 +246,7 @@ impl ChatWidget<'_> {
                 self.bottom_pane.set_task_running(true);
                 self.request_redraw();
             }
-            EventMsg::TaskComplete => {
+            EventMsg::TaskComplete { .. } => {
                 self.bottom_pane.set_task_running(false);
                 self.request_redraw();
             }

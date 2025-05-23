@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -25,8 +26,8 @@ use crate::flags::OPENAI_REQUEST_MAX_RETRIES;
 use crate::flags::OPENAI_STREAM_IDLE_TIMEOUT_MS;
 use crate::models::ContentItem;
 use crate::models::ResponseItem;
-use crate::util::backoff;
 use crate::util::UrlExt;
+use crate::util::backoff;
 
 /// Implementation for the classic Chat Completions API. This is intentionally
 /// minimal: we only stream back plain assistant text.
@@ -35,6 +36,7 @@ pub(crate) async fn stream_chat_completions(
     model: &str,
     client: &reqwest::Client,
     provider: &ModelProviderInfo,
+    token_aggregator: Arc<std::sync::Mutex<crate::client_common::TokenAggregator>>,
 ) -> Result<ResponseStream> {
     // Build messages array
     let mut messages = Vec::<serde_json::Value>::new();
@@ -60,10 +62,15 @@ pub(crate) async fn stream_chat_completions(
     let payload = json!({
         "model": model,
         "messages": messages,
-        "stream": true
+        "stream": true,
+        "stream_options": {"include_usage": true}
     });
 
-    let url = provider.base_url.clone().append_path("/chat/completions")?.to_string();
+    let url = provider
+        .base_url
+        .clone()
+        .append_path("/chat/completions")?
+        .to_string();
 
     debug!("{} POST (chat)", &url);
     trace!("request payload: {}", payload);
@@ -87,7 +94,11 @@ pub(crate) async fn stream_chat_completions(
             Ok(resp) if resp.status().is_success() => {
                 let (tx_event, rx_event) = mpsc::channel::<Result<ResponseEvent>>(16);
                 let stream = resp.bytes_stream().map_err(CodexErr::Reqwest);
-                tokio::spawn(process_chat_sse(stream, tx_event));
+                tokio::spawn(process_chat_sse(
+                    stream,
+                    tx_event,
+                    Arc::clone(&token_aggregator),
+                ));
                 return Ok(ResponseStream { rx_event });
             }
             Ok(res) => {
@@ -126,13 +137,20 @@ pub(crate) async fn stream_chat_completions(
 /// Lightweight SSE processor for the Chat Completions streaming format. The
 /// output is mapped onto Codex's internal [`ResponseEvent`] so that the rest
 /// of the pipeline can stay agnostic of the underlying wire format.
-async fn process_chat_sse<S>(stream: S, tx_event: mpsc::Sender<Result<ResponseEvent>>)
-where
+async fn process_chat_sse<S>(
+    stream: S,
+    tx_event: mpsc::Sender<Result<ResponseEvent>>,
+    token_aggregator: Arc<std::sync::Mutex<crate::client_common::TokenAggregator>>,
+) where
     S: Stream<Item = Result<Bytes>> + Unpin,
 {
     let mut stream = stream.eventsource();
 
     let idle_timeout = *OPENAI_STREAM_IDLE_TIMEOUT_MS;
+
+    // Track usage information to include in final completion event
+    let mut input_tokens = None;
+    let mut output_tokens = None;
 
     loop {
         let sse = match timeout(idle_timeout, stream.next()).await {
@@ -146,6 +164,8 @@ where
                 let _ = tx_event
                     .send(Ok(ResponseEvent::Completed {
                         response_id: String::new(),
+                        input_tokens,
+                        output_tokens,
                     }))
                     .await;
                 return;
@@ -163,6 +183,8 @@ where
             let _ = tx_event
                 .send(Ok(ResponseEvent::Completed {
                     response_id: String::new(),
+                    input_tokens,
+                    output_tokens,
                 }))
                 .await;
             return;
@@ -173,6 +195,30 @@ where
             Ok(v) => v,
             Err(_) => continue,
         };
+
+        // Store usage statistics when received.
+        // Chat Completions API uses "prompt_tokens" and "completion_tokens"
+        if let Some(usage) = chunk.get("usage") {
+            let usage_input_tokens = usage
+                .get("prompt_tokens")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u32)
+                .unwrap_or(0);
+            let usage_output_tokens = usage
+                .get("completion_tokens")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u32)
+                .unwrap_or(0);
+
+            // Add to session aggregator
+            token_aggregator
+                .lock()
+                .unwrap()
+                .add_token_usage(usage_input_tokens, usage_output_tokens);
+
+            input_tokens = Some(usage_input_tokens);
+            output_tokens = Some(usage_output_tokens);
+        }
 
         let content_opt = chunk
             .get("choices")
@@ -251,7 +297,7 @@ where
                     // Swallow partial event; keep polling.
                     continue;
                 }
-                Poll::Ready(Some(Ok(ResponseEvent::Completed { response_id }))) => {
+                Poll::Ready(Some(Ok(ResponseEvent::Completed { response_id, .. }))) => {
                     if !this.cumulative.is_empty() {
                         let aggregated_item = crate::models::ResponseItem::Message {
                             role: "assistant".to_string(),
@@ -261,7 +307,11 @@ where
                         };
 
                         // Buffer Completed so it is returned *after* the aggregated message.
-                        this.pending_completed = Some(ResponseEvent::Completed { response_id });
+                        this.pending_completed = Some(ResponseEvent::Completed {
+                            response_id,
+                            input_tokens: None,
+                            output_tokens: None,
+                        });
 
                         return Poll::Ready(Some(Ok(ResponseEvent::OutputItemDone(
                             aggregated_item,
@@ -269,8 +319,12 @@ where
                     }
 
                     // Nothing aggregated – forward Completed directly.
-                    return Poll::Ready(Some(Ok(ResponseEvent::Completed { response_id })));
-                } // No other `Ok` variants exist at the moment, continue polling.
+                    return Poll::Ready(Some(Ok(ResponseEvent::Completed {
+                        response_id,
+                        input_tokens: None,
+                        output_tokens: None,
+                    })));
+                }
             }
         }
     }
