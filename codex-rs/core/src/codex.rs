@@ -81,7 +81,7 @@ use crate::rollout::RolloutRecorder;
 use crate::safety::SafetyCheck;
 use crate::safety::assess_command_safety;
 use crate::safety::assess_patch_safety;
-use crate::usage::get_openai_pricing;
+use crate::usage::compute_openai_cost;
 use crate::user_notification::UserNotification;
 use crate::util::backoff;
 
@@ -881,28 +881,26 @@ async fn run_task(sess: Arc<Session>, sub_id: String, input: Vec<InputItem>) {
         .as_str()
         .contains("openai.com");
 
-    let (total_cost_opt, input_tokens_opt, output_tokens_opt) = if is_openai_provider {
+    let token_usage_opt = if is_openai_provider {
         let model = sess.client.model_name();
-        let (per_input_token_cost, per_output_token_cost) =
-            get_openai_pricing(model).unwrap_or((0.0, 0.0));
-        // Rates are per-token. Multiply directly.
-        let cost = (total_input_tokens as f64) * per_input_token_cost
-            + (total_output_tokens as f64) * per_output_token_cost;
-        (
-            Some(cost),
-            Some(total_input_tokens),
-            Some(total_output_tokens),
-        )
+        let cost = compute_openai_cost(model, total_input_tokens, total_output_tokens);
+        Some(crate::protocol::TokenUsage {
+            input_tokens: total_input_tokens,
+            output_tokens: total_output_tokens,
+            total_cost: cost,
+        })
     } else {
-        (None, None, None)
+        Some(crate::protocol::TokenUsage {
+            input_tokens: total_input_tokens,
+            output_tokens: total_output_tokens,
+            total_cost: None,
+        })
     };
 
     let event = Event {
         id: sub_id,
         msg: EventMsg::TaskComplete {
-            total_cost: total_cost_opt,
-            input_tokens: input_tokens_opt,
-            output_tokens: output_tokens_opt,
+            token_usage: token_usage_opt,
         },
     };
     sess.tx_event.send(event).await.ok();

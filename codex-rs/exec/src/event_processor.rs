@@ -117,8 +117,17 @@ impl EventProcessor {
                 let msg = format!("Task started: {id}");
                 ts_println!("{}", msg.style(self.dimmed));
             }
-            EventMsg::TaskComplete => {
-                let msg = format!("Task complete: {id}");
+            EventMsg::TaskComplete { token_usage } => {
+                let mut msg = format!("Task complete: {id}");
+                if let Some(usage) = token_usage {
+                    msg.push_str(&format!(
+                        " ({}input, {}output tokens)",
+                        usage.input_tokens, usage.output_tokens
+                    ));
+                    if let Some(cost) = usage.total_cost {
+                        msg.push_str(&format!(" [${:.4}]", cost));
+                    }
+                }
                 ts_println!("{}", msg.style(self.bold));
             }
             EventMsg::AgentMessage(AgentMessageEvent { message }) => {

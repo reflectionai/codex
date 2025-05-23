@@ -1,3 +1,13 @@
+/// Computes the total cost in USD for the given token usage using OpenAI pricing.
+/// Returns `None` if the model is unknown or pricing is unavailable.
+pub fn compute_openai_cost(model: &str, input_tokens: u32, output_tokens: u32) -> Option<f64> {
+    let (per_input_token_cost, per_output_token_cost) = get_openai_pricing(model)?;
+    // Rates are per-token. Multiply directly.
+    let cost = (input_tokens as f64) * per_input_token_cost
+        + (output_tokens as f64) * per_output_token_cost;
+    Some(cost)
+}
+
 /// Returns the OpenAI per-token pricing (input, output) **in USD** for
 /// a given model name. The list is not exhaustive – it only covers the most
 /// common public models so we offer reasonable estimates without hard-coding
@@ -29,6 +39,21 @@ pub fn get_openai_pricing(model: &str) -> Option<(f64, f64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_compute_openai_cost() {
+        // Test cost computation for known model
+        let cost = compute_openai_cost("gpt-4o-mini", 1000, 500).unwrap();
+        let expected = (1000.0 * 0.6 / 1_000_000.0) + (500.0 * 2.4 / 1_000_000.0);
+        assert_eq!(cost, expected);
+
+        // Test cost computation for unknown model
+        assert_eq!(compute_openai_cost("unknown-model", 1000, 500), None);
+
+        // Test zero tokens
+        let cost = compute_openai_cost("gpt-4o-mini", 0, 0).unwrap();
+        assert_eq!(cost, 0.0);
+    }
 
     #[test]
     fn test_openai_pricing() {

@@ -1,5 +1,5 @@
-use url::Url;
 use codex_core::util::UrlExt;
+use url::Url;
 
 #[cfg(test)]
 mod tests {
@@ -16,7 +16,10 @@ mod tests {
     fn test_append_path_with_query_params() {
         let base_url = Url::parse("https://api.example.com/v1?version=2023").unwrap();
         let result = base_url.append_path("/models").unwrap();
-        assert_eq!(result.as_str(), "https://api.example.com/v1/models?version=2023");
+        assert_eq!(
+            result.as_str(),
+            "https://api.example.com/v1/models?version=2023"
+        );
     }
 
     #[test]
@@ -44,7 +47,10 @@ mod tests {
     fn test_append_path_with_complex_query() {
         let base_url = Url::parse("https://api.example.com/v1?version=2023&api-key=123").unwrap();
         let result = base_url.append_path("/models/gpt-4").unwrap();
-        assert_eq!(result.as_str(), "https://api.example.com/v1/models/gpt-4?version=2023&api-key=123");
+        assert_eq!(
+            result.as_str(),
+            "https://api.example.com/v1/models/gpt-4?version=2023&api-key=123"
+        );
     }
 
     #[test]

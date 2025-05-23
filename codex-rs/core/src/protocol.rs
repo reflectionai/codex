@@ -321,15 +321,12 @@ pub enum EventMsg {
     TaskStarted,
 
     /// Agent has completed all actions. When using an OpenAI provider, the
-    /// server includes the total cost in USD as well as token usage metrics
-    /// for the entire task. For non-OpenAI providers these fields are `null`.
+    /// server includes token usage metrics and total cost in USD for the entire
+    /// task. For non-OpenAI providers this field is `null`.
     TaskComplete {
         #[serde(skip_serializing_if = "Option::is_none")]
-        total_cost: Option<f64>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        input_tokens: Option<u32>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        output_tokens: Option<u32>,
+        #[serde(flatten)]
+        token_usage: Option<TokenUsage>,
     },
 
     /// Agent text output message
@@ -365,6 +362,15 @@ pub enum EventMsg {
 
     /// Response to GetHistoryEntryRequest.
     GetHistoryEntryResponse(GetHistoryEntryResponseEvent),
+}
+
+/// Token usage information for API calls
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TokenUsage {
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_cost: Option<f64>,
 }
 
 // Individual event payload types matching each `EventMsg` variant.
@@ -567,6 +573,65 @@ mod tests {
         assert_eq!(
             serialized,
             r#"{"id":"1234","msg":{"type":"session_configured","session_id":"67e55044-10b1-426f-9247-bb680e5fe0c8","model":"o4-mini","history_log_id":0,"history_entry_count":0}}"#
+        );
+    }
+
+    /// Serialize TaskComplete event with token usage to verify JSON format
+    #[test]
+    fn serialize_task_complete_with_usage() {
+        let event = Event {
+            id: "5678".to_string(),
+            msg: EventMsg::TaskComplete {
+                token_usage: Some(TokenUsage {
+                    input_tokens: 1000,
+                    output_tokens: 500,
+                    total_cost: Some(0.0125),
+                }),
+            },
+        };
+        let serialized = serde_json::to_string(&event).unwrap();
+        println!("JSON with cost: {}", serialized);
+        assert_eq!(
+            serialized,
+            r#"{"id":"5678","msg":{"type":"task_complete","input_tokens":1000,"output_tokens":500,"total_cost":0.0125}}"#
+        );
+    }
+
+    /// Serialize TaskComplete event without cost to verify JSON format
+    #[test]
+    fn serialize_task_complete_no_cost() {
+        let event = Event {
+            id: "9999".to_string(),
+            msg: EventMsg::TaskComplete {
+                token_usage: Some(TokenUsage {
+                    input_tokens: 1500,
+                    output_tokens: 750,
+                    total_cost: None,
+                }),
+            },
+        };
+        let serialized = serde_json::to_string(&event).unwrap();
+        println!("JSON without cost: {}", serialized);
+        assert_eq!(
+            serialized,
+            r#"{"id":"9999","msg":{"type":"task_complete","input_tokens":1500,"output_tokens":750}}"#
+        );
+    }
+
+    /// Serialize TaskComplete event with no token usage
+    #[test]
+    fn serialize_task_complete_no_usage() {
+        let event = Event {
+            id: "0000".to_string(),
+            msg: EventMsg::TaskComplete {
+                token_usage: None,
+            },
+        };
+        let serialized = serde_json::to_string(&event).unwrap();
+        println!("JSON no usage: {}", serialized);
+        assert_eq!(
+            serialized,
+            r#"{"id":"0000","msg":{"type":"task_complete"}}"#
         );
     }
 }
