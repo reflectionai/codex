@@ -449,11 +449,13 @@ async fn process_sse<S>(
                         let usage_input_tokens = usage
                             .get("input_tokens")
                             .and_then(|v| v.as_u64())
-                            .unwrap_or(0) as u32;
+                            .map(|v| v as u32)
+                            .unwrap_or(0);
                         let usage_output_tokens = usage
                             .get("output_tokens")
                             .and_then(|v| v.as_u64())
-                            .unwrap_or(0) as u32;
+                            .map(|v| v as u32)
+                            .unwrap_or(0);
 
                         token_aggregator
                             .lock()
