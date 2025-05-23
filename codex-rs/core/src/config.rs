@@ -322,7 +322,10 @@ impl Config {
         // `Config` instance.
         let codex_home = find_codex_home()?;
 
-        let cfg: ConfigToml = ConfigToml::load_from_toml(&codex_home)?;
+        let root_value = load_config_as_toml(&codex_home)?;
+        let cfg: ConfigToml = root_value.try_into().map_err(|e| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, e)
+        })?;
         // tracing::warn!("Config parsed from config.toml: {cfg:?}");
 
         Self::load_from_base_config_with_overrides(cfg, overrides, codex_home)

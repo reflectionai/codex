@@ -152,9 +152,7 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
             if event.id == initial_images_event_id
                 && matches!(
                     event.msg,
-                    EventMsg::TaskComplete(TaskCompleteEvent {
-                        last_agent_message: _,
-                    })
+                    EventMsg::TaskComplete(TaskCompleteEvent { .. })
                 )
             {
                 break;
@@ -171,8 +169,8 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
     let mut event_processor = EventProcessor::create_with_ansi(stdout_with_ansi);
     while let Some(event) = rx.recv().await {
         let (is_last_event, last_assistant_message) = match &event.msg {
-            EventMsg::TaskComplete(TaskCompleteEvent { last_agent_message }) => {
-                (true, last_agent_message.clone())
+            EventMsg::TaskComplete(TaskCompleteEvent { last_agent_message, .. }) => {
+                (event.id == initial_prompt_task_id, last_agent_message.clone())
             }
             _ => (false, None),
         };

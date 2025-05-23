@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::io::BufRead;
 use std::path::Path;
+use std::sync::Arc;
 use std::sync::LazyLock;
 use std::time::Duration;
 
@@ -27,6 +28,7 @@ use crate::client_common::Reasoning;
 use crate::client_common::ResponseEvent;
 use crate::client_common::ResponseStream;
 use crate::client_common::Summary;
+use crate::client_common::TokenAggregator;
 use crate::error::CodexErr;
 use crate::error::EnvVarError;
 use crate::error::Result;
@@ -36,8 +38,8 @@ use crate::flags::OPENAI_STREAM_IDLE_TIMEOUT_MS;
 use crate::model_provider_info::ModelProviderInfo;
 use crate::model_provider_info::WireApi;
 use crate::models::ResponseItem;
-use crate::util::backoff;
 use crate::util::UrlExt;
+use crate::util::backoff;
 
 /// When serialized as JSON, this produces a valid "Tool" in the OpenAI
 /// Responses API.
@@ -107,6 +109,7 @@ pub struct ModelClient {
     model: String,
     client: reqwest::Client,
     provider: ModelProviderInfo,
+    token_aggregator: Arc<std::sync::Mutex<TokenAggregator>>,
 }
 
 impl ModelClient {
@@ -115,7 +118,26 @@ impl ModelClient {
             model: model.to_string(),
             client: reqwest::Client::new(),
             provider,
+            token_aggregator: Arc::new(std::sync::Mutex::new(TokenAggregator::new())),
         }
+    }
+
+    /// Returns the model name used for this client. Helper so callers inside
+    /// the business-logic layer (e.g. for pricing calculations) do not need
+    /// to reach into private fields.
+    pub fn model_name(&self) -> &str {
+        &self.model
+    }
+
+    /// Expose the provider so higher-level modules (e.g. cost accounting) can
+    /// inspect metadata without breaking encapsulation.
+    pub fn provider(&self) -> &ModelProviderInfo {
+        &self.provider
+    }
+
+    /// Get cumulative token usage for this session
+    pub fn get_session_token_usage(&self) -> (u32, u32) {
+        self.token_aggregator.lock().unwrap().get_token_totals()
     }
 
     /// Dispatches to either the Responses or Chat implementation depending on
@@ -126,9 +148,14 @@ impl ModelClient {
             WireApi::Responses => self.stream_responses(prompt).await,
             WireApi::Chat => {
                 // Create the raw streaming connection first.
-                let response_stream =
-                    stream_chat_completions(prompt, &self.model, &self.client, &self.provider)
-                        .await?;
+                let response_stream = stream_chat_completions(
+                    prompt,
+                    &self.model,
+                    &self.client,
+                    &self.provider,
+                    Arc::clone(&self.token_aggregator),
+                )
+                .await?;
 
                 // Wrap it with the aggregation adapter so callers see *only*
                 // the final assistant message per turn (matching the
@@ -199,7 +226,12 @@ impl ModelClient {
             stream: true,
         };
 
-        let url = self.provider.base_url.clone().append_path("/responses")?.to_string();
+        let url = self
+            .provider
+            .base_url
+            .clone()
+            .append_path("/responses")?
+            .to_string();
 
         debug!("{} POST", url);
         trace!("request payload: {}", serde_json::to_string(&payload)?);
@@ -237,7 +269,11 @@ impl ModelClient {
 
                     // spawn task to process SSE
                     let stream = resp.bytes_stream().map_err(CodexErr::Reqwest);
-                    tokio::spawn(process_sse(stream, tx_event));
+                    tokio::spawn(process_sse(
+                        stream,
+                        tx_event,
+                        Arc::clone(&self.token_aggregator),
+                    ));
 
                     return Ok(ResponseStream { rx_event });
                 }
@@ -325,8 +361,11 @@ struct ResponseCompleted {
     id: String,
 }
 
-async fn process_sse<S>(stream: S, tx_event: mpsc::Sender<Result<ResponseEvent>>)
-where
+async fn process_sse<S>(
+    stream: S,
+    tx_event: mpsc::Sender<Result<ResponseEvent>>,
+    token_aggregator: Arc<std::sync::Mutex<TokenAggregator>>,
+) where
     S: Stream<Item = Result<Bytes>> + Unpin,
 {
     let mut stream = stream.eventsource();
@@ -335,6 +374,9 @@ where
     let idle_timeout = *OPENAI_STREAM_IDLE_TIMEOUT_MS;
     // The response id returned from the "complete" message.
     let mut response_id = None;
+    // Token usage information
+    let mut input_tokens = None;
+    let mut output_tokens = None;
 
     loop {
         let sse = match timeout(idle_timeout, stream.next()).await {
@@ -348,7 +390,11 @@ where
             Ok(None) => {
                 match response_id {
                     Some(response_id) => {
-                        let event = ResponseEvent::Completed { response_id };
+                        let event = ResponseEvent::Completed {
+                            response_id,
+                            input_tokens,
+                            output_tokens,
+                        };
                         let _ = tx_event.send(Ok(event)).await;
                     }
                     None => {
@@ -412,6 +458,28 @@ where
             // Final response completed – includes array of output items & id
             "response.completed" => {
                 if let Some(resp_val) = event.response {
+                    // Extract usage if present (Responses API uses input_tokens/output_tokens)
+                    if let Some(usage) = resp_val.get("usage") {
+                        let usage_input_tokens = usage
+                            .get("input_tokens")
+                            .and_then(|v| v.as_u64())
+                            .map(|v| v as u32)
+                            .unwrap_or(0);
+                        let usage_output_tokens = usage
+                            .get("output_tokens")
+                            .and_then(|v| v.as_u64())
+                            .map(|v| v as u32)
+                            .unwrap_or(0);
+
+                        token_aggregator
+                            .lock()
+                            .unwrap()
+                            .add_token_usage(usage_input_tokens, usage_output_tokens);
+
+                        input_tokens = Some(usage_input_tokens);
+                        output_tokens = Some(usage_output_tokens);
+                    }
+
                     match serde_json::from_value::<ResponseCompleted>(resp_val) {
                         Ok(r) => {
                             response_id = Some(r.id);
@@ -443,6 +511,7 @@ async fn stream_from_fixture(path: impl AsRef<Path>) -> Result<ResponseStream> {
 
     let rdr = std::io::Cursor::new(content);
     let stream = ReaderStream::new(rdr).map_err(CodexErr::Io);
-    tokio::spawn(process_sse(stream, tx_event));
+    let dummy_aggregator = Arc::new(std::sync::Mutex::new(TokenAggregator::new()));
+    tokio::spawn(process_sse(stream, tx_event, dummy_aggregator));
     Ok(ResponseStream { rx_event })
 }

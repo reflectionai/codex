@@ -84,6 +84,7 @@ use crate::rollout::RolloutRecorder;
 use crate::safety::SafetyCheck;
 use crate::safety::assess_command_safety;
 use crate::safety::assess_patch_safety;
+use crate::usage::compute_openai_cost;
 use crate::user_notification::UserNotification;
 use crate::util::backoff;
 
@@ -877,9 +878,39 @@ async fn run_task(sess: Arc<Session>, sub_id: String, input: Vec<InputItem>) {
         }
     }
     sess.remove_task(&sub_id);
+
+    // Get aggregated usage from client and calculate cost for OpenAI models
+    let (total_input_tokens, total_output_tokens) = sess.client.get_session_token_usage();
+
+    let is_openai_provider = sess
+        .client
+        .provider()
+        .base_url
+        .as_str()
+        .contains("openai.com");
+
+    let token_usage_opt = if is_openai_provider {
+        let model = sess.client.model_name();
+        let cost = compute_openai_cost(model, total_input_tokens, total_output_tokens);
+        Some(crate::protocol::TokenUsage {
+            input_tokens: total_input_tokens,
+            output_tokens: total_output_tokens,
+            total_cost: cost,
+        })
+    } else {
+        Some(crate::protocol::TokenUsage {
+            input_tokens: total_input_tokens,
+            output_tokens: total_output_tokens,
+            total_cost: None,
+        })
+    };
+
     let event = Event {
         id: sub_id,
-        msg: EventMsg::TaskComplete(TaskCompleteEvent { last_agent_message }),
+        msg: EventMsg::TaskComplete(TaskCompleteEvent {
+            last_agent_message,
+            token_usage: token_usage_opt,
+        }),
     };
     sess.tx_event.send(event).await.ok();
 }
@@ -971,8 +1002,7 @@ async fn try_run_turn(
 ) -> CodexResult<Vec<ProcessedResponseItem>> {
     let mut stream = sess.client.clone().stream(prompt).await?;
 
-    // Buffer all the incoming messages from the stream first, then execute them.
-    // If we execute a function call in the middle of handling the stream, it can time out.
+    // Buffer all incoming messages first as before.
     let mut input = Vec::new();
     while let Some(event) = stream.next().await {
         input.push(event?);
@@ -985,7 +1015,7 @@ async fn try_run_turn(
                 let response = handle_response_item(sess, sub_id, item.clone()).await?;
                 output.push(ProcessedResponseItem { item, response });
             }
-            ResponseEvent::Completed { response_id } => {
+            ResponseEvent::Completed { response_id, .. } => {
                 let mut state = sess.state.lock().unwrap();
                 state.previous_response_id = Some(response_id);
                 break;

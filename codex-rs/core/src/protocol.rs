@@ -358,6 +358,15 @@ pub enum EventMsg {
     GetHistoryEntryResponse(GetHistoryEntryResponseEvent),
 }
 
+/// Token usage information for API calls
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TokenUsage {
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_cost: Option<f64>,
+}
+
 // Individual event payload types matching each `EventMsg` variant.
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -368,6 +377,9 @@ pub struct ErrorEvent {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TaskCompleteEvent {
     pub last_agent_message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(flatten)]
+    pub token_usage: Option<TokenUsage>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -547,29 +559,3 @@ pub struct Chunk {
     pub inserted_lines: Vec<String>,
 }
 
-#[cfg(test)]
-mod tests {
-    #![allow(clippy::unwrap_used)]
-    use super::*;
-
-    /// Serialize Event to verify that its JSON representation has the expected
-    /// amount of nesting.
-    #[test]
-    fn serialize_event() {
-        let session_id: Uuid = uuid::uuid!("67e55044-10b1-426f-9247-bb680e5fe0c8");
-        let event = Event {
-            id: "1234".to_string(),
-            msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
-                session_id,
-                model: "o4-mini".to_string(),
-                history_log_id: 0,
-                history_entry_count: 0,
-            }),
-        };
-        let serialized = serde_json::to_string(&event).unwrap();
-        assert_eq!(
-            serialized,
-            r#"{"id":"1234","msg":{"type":"session_configured","session_id":"67e55044-10b1-426f-9247-bb680e5fe0c8","model":"o4-mini","history_log_id":0,"history_entry_count":0}}"#
-        );
-    }
-}

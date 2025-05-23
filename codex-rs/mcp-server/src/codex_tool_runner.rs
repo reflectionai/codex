@@ -126,9 +126,7 @@ pub async fn run_codex_tool_session(
                             .await;
                         break;
                     }
-                    EventMsg::TaskComplete(TaskCompleteEvent {
-                        last_agent_message: _,
-                    }) => {
+                    EventMsg::TaskComplete(TaskCompleteEvent { .. }) => {
                         let result = if let Some(msg) = last_agent_message {
                             CallToolResult {
                                 content: vec![CallToolResultContent::TextContent(TextContent {

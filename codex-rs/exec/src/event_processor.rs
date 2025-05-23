@@ -141,8 +141,21 @@ impl EventProcessor {
             EventMsg::BackgroundEvent(BackgroundEventEvent { message }) => {
                 ts_println!("{}", message.style(self.dimmed));
             }
-            EventMsg::TaskStarted | EventMsg::TaskComplete(_) => {
-                // Ignore.
+            EventMsg::TaskStarted => {
+                // Ignore in exec mode for now
+            }
+            EventMsg::TaskComplete(task_complete_event) => {
+                let mut msg = "Task complete".to_string();
+                if let Some(usage) = &task_complete_event.token_usage {
+                    msg.push_str(&format!(
+                        " ({} input, {} output tokens)",
+                        usage.input_tokens, usage.output_tokens
+                    ));
+                    if let Some(cost) = usage.total_cost {
+                        msg.push_str(&format!(" [${:.4}]", cost));
+                    }
+                }
+                ts_println!("{}", msg.style(self.bold));
             }
             EventMsg::AgentMessage(AgentMessageEvent { message }) => {
                 let prefix = "Agent message:".style(self.bold);

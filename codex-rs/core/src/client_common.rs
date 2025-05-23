@@ -47,7 +47,32 @@ impl Prompt {
 #[derive(Debug)]
 pub enum ResponseEvent {
     OutputItemDone(ResponseItem),
-    Completed { response_id: String },
+    Completed {
+        response_id: String,
+        input_tokens: Option<u32>,
+        output_tokens: Option<u32>,
+    },
+}
+
+#[derive(Debug, Default)]
+pub struct TokenAggregator {
+    total_input_tokens: u32,
+    total_output_tokens: u32,
+}
+
+impl TokenAggregator {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn add_token_usage(&mut self, input_tokens: u32, output_tokens: u32) {
+        self.total_input_tokens += input_tokens;
+        self.total_output_tokens += output_tokens;
+    }
+
+    pub fn get_token_totals(&self) -> (u32, u32) {
+        (self.total_input_tokens, self.total_output_tokens)
+    }
 }
 
 #[derive(Debug, Serialize)]
