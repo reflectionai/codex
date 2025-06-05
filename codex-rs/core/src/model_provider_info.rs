@@ -9,9 +9,16 @@ use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::env::VarError;
+use std::fmt::Debug;
+use std::sync::Arc;
 use url::Url;
 
 use crate::error::EnvVarError;
+
+/// Trait for providing API keys dynamically
+pub trait ApiKeyProvider: Send + Sync + Debug {
+    fn get(&self) -> String;
+}
 
 /// Wire protocol that the provider speaks. Most third-party services only
 /// implement the classic OpenAI Chat Completions JSON schema, whereas OpenAI
@@ -30,7 +37,7 @@ pub enum WireApi {
 }
 
 /// Serializable representation of a provider definition.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ModelProviderInfo {
     /// Friendly display name.
     pub name: String,
@@ -45,13 +52,37 @@ pub struct ModelProviderInfo {
 
     /// Which wire protocol this provider expects.
     pub wire_api: WireApi,
+
+    /// Optional API key provider for dynamic key retrieval
+    #[serde(skip)]
+    pub api_key_provider: Option<Arc<dyn ApiKeyProvider>>,
+}
+
+impl PartialEq for ModelProviderInfo {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+            && self.base_url == other.base_url
+            && self.env_key == other.env_key
+            && self.env_key_instructions == other.env_key_instructions
+            && self.wire_api == other.wire_api
+        // Skip api_key_provider in comparison since trait objects can't be easily compared
+    }
 }
 
 impl ModelProviderInfo {
     /// If `env_key` is Some, returns the API key for this provider if present
     /// (and non-empty) in the environment. If `env_key` is required but
-    /// cannot be found, returns an error.
+    /// cannot be found, returns an error. If `api_key_provider` is set, uses that instead.
     pub fn api_key(&self) -> crate::error::Result<Option<String>> {
+        // Check if we have an API key provider first
+        if let Some(provider) = &self.api_key_provider {
+            let key = provider.get();
+            if !key.trim().is_empty() {
+                return Ok(Some(key));
+            }
+        }
+
+        // Fall back to environment variable approach
         match &self.env_key {
             Some(env_key) => std::env::var(env_key)
                 .and_then(|v| {
@@ -85,6 +116,7 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
                 env_key: Some("OPENAI_API_KEY".into()),
                 env_key_instructions: Some("Create an API key (https://platform.openai.com) and export it as an environment variable.".into()),
                 wire_api: WireApi::Responses,
+                api_key_provider: None,
             },
         ),
         (
@@ -95,6 +127,7 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
                 env_key: Some("OPENROUTER_API_KEY".into()),
                 env_key_instructions: None,
                 wire_api: WireApi::Chat,
+                api_key_provider: None,
             },
         ),
         (
@@ -105,6 +138,7 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
                 env_key: Some("GEMINI_API_KEY".into()),
                 env_key_instructions: None,
                 wire_api: WireApi::Chat,
+                api_key_provider: None,
             },
         ),
         (
@@ -115,6 +149,7 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
                 env_key: None,
                 env_key_instructions: None,
                 wire_api: WireApi::Chat,
+                api_key_provider: None,
             },
         ),
         (
@@ -125,6 +160,7 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
                 env_key: Some("MISTRAL_API_KEY".into()),
                 env_key_instructions: None,
                 wire_api: WireApi::Chat,
+                api_key_provider: None,
             },
         ),
         (
@@ -135,6 +171,7 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
                 env_key: Some("DEEPSEEK_API_KEY".into()),
                 env_key_instructions: None,
                 wire_api: WireApi::Chat,
+                api_key_provider: None,
             },
         ),
         (
@@ -145,6 +182,7 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
                 env_key: Some("XAI_API_KEY".into()),
                 env_key_instructions: None,
                 wire_api: WireApi::Chat,
+                api_key_provider: None,
             },
         ),
         (
@@ -155,6 +193,7 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
                 env_key: Some("GROQ_API_KEY".into()),
                 env_key_instructions: None,
                 wire_api: WireApi::Chat,
+                api_key_provider: None,
             },
         ),
     ]
