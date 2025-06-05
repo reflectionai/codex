@@ -71,7 +71,7 @@ pub trait UrlExt {
     /// Append a path to the URL, without modifying the original URL components.
     /// It allows us to configure query parameters and carry them over when we use
     /// different Wire API endpoints.
-    ///
+    /// 
     /// This is necessary as some APIs (e.g. Azure OpenAI) requires query parameters
     /// to select different versions.
     fn append_path(self, path: &str) -> Result<Url, anyhow::Error>;
@@ -80,16 +80,17 @@ pub trait UrlExt {
 impl UrlExt for Url {
     fn append_path(self, path: &str) -> Result<Url, anyhow::Error> {
         let mut url = self.clone();
-
+        
         // Validate path doesn't contain invalid characters
         if path.contains(|c: char| c.is_whitespace() || c == '?' || c == '#') {
-            return Err(anyhow::anyhow!(
-                "Invalid path: contains whitespace or special characters"
-            ));
+            return Err(anyhow::anyhow!("Invalid path: contains whitespace or special characters"));
         }
 
         // Split the path into segments, filtering out empty ones
-        let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        let segments: Vec<&str> = path
+            .split('/')
+            .filter(|s| !s.is_empty())
+            .collect();
 
         if segments.is_empty() {
             return Ok(url);
@@ -97,13 +98,12 @@ impl UrlExt for Url {
 
         // Get path segments and add new segments
         {
-            let mut path_segments = url
-                .path_segments_mut()
+            let mut path_segments = url.path_segments_mut()
                 .map_err(|_| anyhow::anyhow!("Failed to get path segments"))?;
-
+            
             // Remove trailing empty segment if it exists
             path_segments.pop_if_empty();
-
+            
             // Add each non-empty segment
             for segment in segments {
                 path_segments.push(segment);
