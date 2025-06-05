@@ -333,9 +333,9 @@ impl Config {
         let codex_home = find_codex_home()?;
 
         let root_value = load_config_as_toml(&codex_home)?;
-        let cfg: ConfigToml = root_value.try_into().map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-        })?;
+        let cfg: ConfigToml = root_value
+            .try_into()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         // tracing::warn!("Config parsed from config.toml: {cfg:?}");
 
         Self::load_from_base_config_with_overrides(cfg, overrides, codex_home)
@@ -904,5 +904,46 @@ disable_response_storage = true
         assert_eq!(expected_zdr_profile_config, zdr_profile_config);
 
         Ok(())
+    }
+
+    #[test]
+    fn test_default_timeout_ms_default_value() -> std::io::Result<()> {
+        let fixture = create_test_fixture()?;
+
+        let config = Config::load_from_base_config_with_overrides(
+            fixture.cfg.clone(),
+            ConfigOverrides {
+                cwd: Some(fixture.cwd()),
+                ..Default::default()
+            },
+            fixture.codex_home(),
+        )?;
+
+        assert_eq!(config.default_timeout_ms, DEFAULT_TIMEOUT_MS);
+        assert_eq!(config.default_timeout_ms, 300_000);
+        Ok(())
+    }
+
+    #[test]
+    fn test_default_timeout_ms_custom_value() -> std::io::Result<()> {
+        let mut cfg = ConfigToml::default();
+        cfg.default_timeout_ms = Some(60_000);
+
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides {
+                cwd: Some(std::env::current_dir()?),
+                ..Default::default()
+            },
+            std::env::current_dir()?,
+        )?;
+
+        assert_eq!(config.default_timeout_ms, 60_000);
+        Ok(())
+    }
+
+    #[test]
+    fn test_default_timeout_ms_constant() {
+        assert_eq!(DEFAULT_TIMEOUT_MS, 300_000);
     }
 }
