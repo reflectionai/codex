@@ -42,12 +42,6 @@ pub(crate) static MAX_STREAM_OUTPUT_LINES: Lazy<usize> = Lazy::new(|| {
         .unwrap_or(1024) // 1024 lines
 });
 
-pub(crate) static DEFAULT_TIMEOUT_MS: Lazy<u64> = Lazy::new(|| {
-    std::env::var("CODEX_DEFAULT_TIMEOUT_MS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(300_000) // 5 minutes
-});
 
 // Hardcode these since it does not seem worth including the libc crate just
 // for these.
@@ -76,7 +70,7 @@ pub const CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR: &str = "CODEX_SANDBOX_NETWORK_
 pub struct ExecParams {
     pub command: Vec<String>,
     pub cwd: PathBuf,
-    pub timeout_ms: Option<u64>,
+    pub timeout_ms: u64,
     pub env: HashMap<String, String>,
 }
 
@@ -449,7 +443,7 @@ async fn spawn_child_async(
 pub(crate) async fn consume_truncated_output(
     mut child: Child,
     ctrl_c: Arc<Notify>,
-    timeout_ms: Option<u64>,
+    timeout_ms: u64,
 ) -> Result<RawExecToolCallOutput> {
     // Both stdout and stderr were configured with `Stdio::piped()`
     // above, therefore `take()` should normally return `Some`.  If it doesn't
@@ -478,7 +472,7 @@ pub(crate) async fn consume_truncated_output(
     ));
 
     let interrupted = ctrl_c.notified();
-    let timeout = Duration::from_millis(timeout_ms.unwrap_or(*DEFAULT_TIMEOUT_MS));
+    let timeout = Duration::from_millis(timeout_ms);
     let exit_status = tokio::select! {
         result = tokio::time::timeout(timeout, child.wait()) => {
             match result {

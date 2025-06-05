@@ -23,6 +23,9 @@ use toml::Value as TomlValue;
 /// the context window.
 pub(crate) const PROJECT_DOC_MAX_BYTES: usize = 32 * 1024; // 32 KiB
 
+/// Default timeout for shell commands in milliseconds.
+pub(crate) const DEFAULT_TIMEOUT_MS: u64 = 300_000; // 5 minutes
+
 /// Application configuration loaded from disk and merged with overrides.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
@@ -99,6 +102,9 @@ pub struct Config {
 
     /// Collection of settings that are specific to the TUI.
     pub tui: Tui,
+
+    /// Default timeout for shell commands in milliseconds.
+    pub default_timeout_ms: u64,
 
     /// Path to the `codex-linux-sandbox` executable. This must be set if
     /// [`crate::exec::SandboxType::LinuxSeccomp`] is used. Note that this
@@ -272,6 +278,10 @@ pub struct ConfigToml {
 
     /// Collection of settings that are specific to the TUI.
     pub tui: Option<Tui>,
+
+    /// Default timeout for shell commands in milliseconds.
+    #[serde(default)]
+    pub default_timeout_ms: Option<u64>,
 }
 
 fn deserialize_sandbox_permissions<'de, D>(
@@ -450,6 +460,7 @@ impl Config {
             history,
             file_opener: cfg.file_opener.unwrap_or(UriBasedFileOpener::VsCode),
             tui: cfg.tui.unwrap_or_default(),
+            default_timeout_ms: cfg.default_timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS),
             codex_linux_sandbox_exe,
         };
         Ok(config)
@@ -791,6 +802,7 @@ disable_response_storage = true
                 history: History::default(),
                 file_opener: UriBasedFileOpener::VsCode,
                 tui: Tui::default(),
+                default_timeout_ms: 300_000,
                 codex_linux_sandbox_exe: None,
             },
             o3_profile_config
@@ -830,6 +842,7 @@ disable_response_storage = true
             history: History::default(),
             file_opener: UriBasedFileOpener::VsCode,
             tui: Tui::default(),
+            default_timeout_ms: 300_000,
             codex_linux_sandbox_exe: None,
         };
 
@@ -884,6 +897,7 @@ disable_response_storage = true
             history: History::default(),
             file_opener: UriBasedFileOpener::VsCode,
             tui: Tui::default(),
+            default_timeout_ms: 300_000,
             codex_linux_sandbox_exe: None,
         };
 

@@ -184,6 +184,9 @@ pub(crate) struct Session {
     /// `None` this feature is disabled.
     notify: Option<Vec<String>>,
 
+    /// Default timeout for shell commands in milliseconds.
+    default_timeout_ms: u64,
+
     /// Optional rollout recorder for persisting the conversation transcript so
     /// sessions can be replayed or inspected later.
     rollout: Mutex<Option<crate::rollout::RolloutRecorder>>,
@@ -644,6 +647,7 @@ async fn submission_loop(
                     writable_roots,
                     mcp_connection_manager,
                     notify,
+                    default_timeout_ms: config.default_timeout_ms,
                     state: Mutex::new(state),
                     rollout: Mutex::new(rollout_recorder),
                     codex_linux_sandbox_exe: config.codex_linux_sandbox_exe.clone(),
@@ -1159,7 +1163,7 @@ fn to_exec_params(params: ShellToolCallParams, sess: &Session) -> ExecParams {
     ExecParams {
         command: params.command,
         cwd: sess.resolve_path(params.workdir.clone()),
-        timeout_ms: params.timeout_ms,
+        timeout_ms: params.timeout_ms.unwrap_or(sess.default_timeout_ms),
         env: create_env(&sess.shell_environment_policy),
     }
 }
